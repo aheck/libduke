@@ -1,0 +1,7 @@
+
+[requires]
+libcheck/0.15.2
+
+[generators]
+PkgConfigDeps
+MesonToolchain
