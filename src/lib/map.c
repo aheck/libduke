@@ -261,6 +261,9 @@ bool duke_map_file_validate(DukeMapFile *map)
     }
 
     duke_map_file_reset_last_error(map);
+
+    /* Do cheaper prerequisite checks first. Each public validator repeats its
+     * own prerequisites so that it is also safe to call independently. */
     return duke_map_file_validate_structure(map)
         && duke_map_file_validate_sector_wall_ownership(map)
         && duke_map_file_validate_wall_loops(map)
@@ -386,6 +389,9 @@ bool duke_map_file_validate_sector_wall_ownership(DukeMapFile *map)
         return false;
     }
 
+    /* Build stores each sector's walls in one contiguous slice. Requiring each
+     * slice to begin where the previous one ended also rejects overlap, gaps,
+     * and walls which are owned by more than one sector. */
     for (i = 0; i < (uint16_t)map->numsectors; i++) {
         DukeMapSector *sector = map->sectors[i];
         uint32_t end;
@@ -424,6 +430,9 @@ bool duke_map_file_validate_wall_loops(DukeMapFile *map)
         return false;
     }
 
+    /* point2 must be a permutation within each sector. A valid in-range
+     * permutation decomposes into one or more closed cycles without needing a
+     * separate traversal or visited array. */
     predecessors = calloc(map->numwalls == 0 ? 1 : map->numwalls, 1);
     if (predecessors == NULL) {
         return map_invalid(map, "Unable to allocate wall validation data");
@@ -465,6 +474,8 @@ bool duke_map_file_validate_wall_loops(DukeMapFile *map)
 static long double orient(const DukeMapWall *a, const DukeMapWall *b,
     const DukeMapWall *c)
 {
+    /* Coordinate differences can span the full int32_t range, so their cross
+     * product does not fit safely in int64_t. */
     return ((long double)b->x - a->x) * ((long double)c->y - a->y)
         - ((long double)b->y - a->y) * ((long double)c->x - a->x);
 }
@@ -492,6 +503,8 @@ static bool segments_intersect(const DukeMapWall *a, const DukeMapWall *b,
     long double o1 = orient(a, b, c), o2 = orient(a, b, d);
     long double o3 = orient(c, d, a), o4 = orient(c, d, b);
 
+    /* Opposite orientations are a proper crossing. The remaining tests also
+     * catch collinear overlap and one segment touching the middle of another. */
     if (sign_long_double(o1) != sign_long_double(o2)
         && sign_long_double(o3) != sign_long_double(o4)) {
         return true;
@@ -510,6 +523,8 @@ static bool point_in_sector(const DukeMapFile *map, uint16_t sectnum,
     bool inside = false;
     DukeMapWall point = { .x = x, .y = y };
 
+    /* Odd-even ray casting works across every point2 cycle at once. Crossing a
+     * hole boundary toggles the result back to outside. */
     for (w = first; w < end; w++) {
         const DukeMapWall *a = map->walls[w];
         const DukeMapWall *b = map->walls[a->point2];
@@ -551,6 +566,7 @@ bool duke_map_file_validate_geometry(DukeMapFile *map)
             for (q = w + 1; q < end; q++) {
                 DukeMapWall *c = map->walls[q];
                 DukeMapWall *d = map->walls[c->point2];
+                /* Consecutive edges necessarily meet at their shared vertex. */
                 if (a->point2 == q || c->point2 == w) {
                     continue;
                 }
@@ -561,7 +577,9 @@ bool duke_map_file_validate_geometry(DukeMapFile *map)
             }
         }
 
-        /* Every point2 cycle must have at least three vertices and nonzero area. */
+        /* Every point2 cycle must have at least three vertices and nonzero area.
+         * Starting from every wall avoids allocating another visited array;
+         * only the lowest-numbered wall in a cycle performs the checks. */
         for (w = first; w < end; w++) {
             int32_t current = w, count = 0;
             long double area = 0.0L;
@@ -582,6 +600,9 @@ bool duke_map_file_validate_geometry(DukeMapFile *map)
                     return map_invalid(map,
                         "Wall loop beginning at %d is degenerate", w);
                 }
+                /* Build's Y axis points down on the editor map: the outer loop
+                 * therefore has positive signed area and holes have negative
+                 * signed area. wallptr identifies the outer loop. */
                 if ((w == first && area < 0.0L)
                     || (w != first && area > 0.0L)) {
                     return map_invalid(map,
@@ -611,6 +632,8 @@ bool duke_map_file_validate_portals(DukeMapFile *map)
             continue;
         }
 
+        /* Any other combination must describe both halves of a portal. This
+         * also rejects half-portals where just one field is -1. */
         if (q < 0 || q >= map->numwalls || target < 0
             || target >= map->numsectors) {
             return map_invalid(map, "Wall %u has an invalid portal reference", w);
@@ -624,6 +647,7 @@ bool duke_map_file_validate_portals(DukeMapFile *map)
             return map_invalid(map, "Wall %u portal is not reciprocal", w);
         }
 
+        /* The two walls describe the same segment in opposite directions. */
         if (wall->x != map->walls[other->point2]->x
             || wall->y != map->walls[other->point2]->y
             || map->walls[wall->point2]->x != other->x
@@ -649,6 +673,9 @@ static long double sector_surface_z(const DukeMapFile *map, uint16_t sectnum,
     if ((stat & 2) == 0) {
         return z;
     }
+
+    /* A Build slope is hinged on the sector's first wall. The signed cross
+     * product is the perpendicular displacement from that hinge. */
     dx = (long double)b->x - a->x;
     dy = (long double)b->y - a->y;
     length = sqrtl(dx * dx + dy * dy);
@@ -667,6 +694,9 @@ bool duke_map_file_validate_vertical_sectors(DukeMapFile *map)
     for (s = 0; s < (uint16_t)map->numsectors; s++) {
         DukeMapSector *sector = map->sectors[s];
         int32_t w, end = sector->wallptr + sector->wallnum;
+        /* Ceiling and floor slopes are affine planes. Their difference is also
+         * affine, so checking every polygon vertex is sufficient to establish
+         * the ordering throughout the sector. */
         for (w = sector->wallptr; w < end; w++) {
             DukeMapWall *point = map->walls[w];
             if (sector_surface_z(map, s, false, point->x, point->y)
@@ -694,6 +724,8 @@ bool duke_map_file_validate_sprites(DukeMapFile *map)
                 sprite->sectnum);
         }
 
+        /* Points on a wall are accepted; Build may subsequently move the
+         * sprite into either adjoining sector. */
         if (!point_in_sector(map, (uint16_t)sprite->sectnum,
                 sprite->x, sprite->y, true)) {
             return map_invalid(map, "Sprite %u is outside sector %d", i,

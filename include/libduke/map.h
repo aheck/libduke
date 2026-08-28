@@ -160,13 +160,21 @@ bool duke_map_file_read_from_filename(DukeMapFile *map, const char *filename);
 bool duke_map_file_validate(DukeMapFile *map);
 /* The validators below may also be called independently. On failure, the first
  * error is written to map->last_error. */
+/* Validate the version, counts, arrays, and individual record pointers. */
 bool duke_map_file_validate_structure(DukeMapFile *map);
+/* Validate that sectors own contiguous, disjoint slices of the wall array. */
 bool duke_map_file_validate_sector_wall_ownership(DukeMapFile *map);
+/* Validate that point2 references form closed cycles within their sector. */
 bool duke_map_file_validate_wall_loops(DukeMapFile *map);
+/* Validate wall lengths, intersections, loop area, and loop winding. */
 bool duke_map_file_validate_geometry(DukeMapFile *map);
+/* Validate nextwall/nextsector reciprocity and matching portal endpoints. */
 bool duke_map_file_validate_portals(DukeMapFile *map);
+/* Validate that the ceiling stays above the floor, including on slopes. */
 bool duke_map_file_validate_vertical_sectors(DukeMapFile *map);
+/* Validate sprite sector/status/angle references and two-dimensional position. */
 bool duke_map_file_validate_sprites(DukeMapFile *map);
+/* Validate the player start sector, angle, and three-dimensional position. */
 bool duke_map_file_validate_start_position(DukeMapFile *map);
 void duke_map_file_reset_last_error(DukeMapFile *map);
 void duke_map_file_free(DukeMapFile *map);
