@@ -9,12 +9,15 @@ project(
 )
 
 inc = include_directories('include')
+cc = meson.get_compiler('c')
+math_dep = cc.find_library('m', required: false)
 
 libduke = library(
   'duke',
   'src/lib/grp.c',
   'src/lib/map.c',
   include_directories: inc,
+  dependencies: math_dep,
   install: true,
   version: meson.project_version(),
 )
@@ -26,6 +29,7 @@ libduke_dep = declare_dependency(
 
 install_headers(
   'include/libduke/grp.h',
+  'include/libduke/map.h',
   subdir: 'libduke',
 )
 
@@ -56,3 +60,14 @@ test_grp = executable(
 )
 
 test('grp', test_grp)
+
+test_map = executable(
+  'test-map',
+  'tests/test_map.c',
+  dependencies: [
+    libduke_dep,
+    check_dep,
+  ],
+)
+
+test('map', test_map)

@@ -1,5 +1,7 @@
 #include "libduke/map.h"
 
+#include <math.h>
+#include <stdarg.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -250,6 +252,500 @@ fail:
     fclose(fp);
     duke_map_file_free(loaded);
     return false;
+}
+
+bool duke_map_file_validate(DukeMapFile *map)
+{
+    if (map == NULL) {
+        return false;
+    }
+
+    duke_map_file_reset_last_error(map);
+    return duke_map_file_validate_structure(map)
+        && duke_map_file_validate_sector_wall_ownership(map)
+        && duke_map_file_validate_wall_loops(map)
+        && duke_map_file_validate_geometry(map)
+        && duke_map_file_validate_portals(map)
+        && duke_map_file_validate_vertical_sectors(map)
+        && duke_map_file_validate_sprites(map)
+        && duke_map_file_validate_start_position(map);
+}
+
+static bool map_invalid(DukeMapFile *map, const char *format, ...)
+{
+    va_list args;
+
+    if (map != NULL) {
+        va_start(args, format);
+        vsnprintf(map->last_error, sizeof(map->last_error), format, args);
+        va_end(args);
+    }
+
+    return false;
+}
+
+static bool map_limits(const DukeMapFile *map, uint16_t *maxsectors,
+    uint16_t *maxwalls, uint16_t *maxsprites)
+{
+    if (map->mapversion == 7) {
+        *maxsectors = MAPV7_MAXSECTORS;
+        *maxwalls = MAPV7_MAXWALLS;
+        *maxsprites = MAPV7_MAXSPRITES;
+        return true;
+    }
+
+    if (map->mapversion == 8 || map->mapversion == 9) {
+        *maxsectors = MAPV8_MAXSECTORS;
+        *maxwalls = MAPV8_MAXWALLS;
+        *maxsprites = MAPV8_MAXSPRITES;
+        return true;
+    }
+
+    return false;
+}
+
+bool duke_map_file_validate_structure(DukeMapFile *map)
+{
+    uint16_t maxsectors, maxwalls, maxsprites, i;
+
+    if (map == NULL) {
+        return false;
+    }
+
+    duke_map_file_reset_last_error(map);
+    if (!map_limits(map, &maxsectors, &maxwalls, &maxsprites)) {
+        return map_invalid(map, "Unsupported map version: %d", map->mapversion);
+    }
+
+    if (map->numsectors < 0 || (uint16_t)map->numsectors > maxsectors) {
+        return map_invalid(map, "Invalid sector count: %d", map->numsectors);
+    }
+
+    if (map->numwalls > maxwalls) {
+        return map_invalid(map, "Invalid wall count: %u", map->numwalls);
+    }
+
+    if (map->numsprites > maxsprites) {
+        return map_invalid(map, "Invalid sprite count: %u", map->numsprites);
+    }
+
+    if (map->numsectors > 0 && map->sectors == NULL) {
+        return map_invalid(map, "Sector array is NULL");
+    }
+
+    if (map->numwalls > 0 && map->walls == NULL) {
+        return map_invalid(map, "Wall array is NULL");
+    }
+
+    if (map->numsprites > 0 && map->sprites == NULL) {
+        return map_invalid(map, "Sprite array is NULL");
+    }
+
+    for (i = 0; i < (uint16_t)map->numsectors; i++) {
+        if (map->sectors[i] == NULL) {
+            return map_invalid(map, "Sector %u is NULL", i);
+        }
+    }
+
+    for (i = 0; i < map->numwalls; i++) {
+        if (map->walls[i] == NULL) {
+            return map_invalid(map, "Wall %u is NULL", i);
+        }
+    }
+
+    for (i = 0; i < map->numsprites; i++) {
+        if (map->sprites[i] == NULL) {
+            return map_invalid(map, "Sprite %u is NULL", i);
+        }
+    }
+
+    return true;
+}
+
+static int map_wall_sector(const DukeMapFile *map, uint16_t wallnum)
+{
+    uint16_t i;
+
+    for (i = 0; i < (uint16_t)map->numsectors; i++) {
+        const DukeMapSector *sector = map->sectors[i];
+        if (wallnum >= (uint16_t)sector->wallptr
+            && wallnum < (uint16_t)(sector->wallptr + sector->wallnum)) {
+            return (int)i;
+        }
+    }
+
+    return -1;
+}
+
+bool duke_map_file_validate_sector_wall_ownership(DukeMapFile *map)
+{
+    uint16_t i;
+    uint32_t expected = 0;
+
+    if (!duke_map_file_validate_structure(map)) {
+        return false;
+    }
+
+    for (i = 0; i < (uint16_t)map->numsectors; i++) {
+        DukeMapSector *sector = map->sectors[i];
+        uint32_t end;
+
+        if (sector->wallptr < 0 || sector->wallnum < 3) {
+            return map_invalid(map,
+                "Sector %u has invalid wall range (%d, %d)", i,
+                sector->wallptr, sector->wallnum);
+        }
+
+        end = (uint32_t)(uint16_t)sector->wallptr
+            + (uint32_t)(uint16_t)sector->wallnum;
+
+        if ((uint32_t)(uint16_t)sector->wallptr != expected
+            || end > map->numwalls) {
+            return map_invalid(map,
+                "Sector %u wall range is not contiguous or is out of bounds", i);
+        }
+        expected = end;
+    }
+
+    if (expected != map->numwalls) {
+        return map_invalid(map, "%u wall(s) are not owned by a sector",
+            (unsigned)(map->numwalls - expected));
+    }
+
+    return true;
+}
+
+bool duke_map_file_validate_wall_loops(DukeMapFile *map)
+{
+    uint16_t s;
+    uint8_t *predecessors;
+
+    if (!duke_map_file_validate_sector_wall_ownership(map)) {
+        return false;
+    }
+
+    predecessors = calloc(map->numwalls == 0 ? 1 : map->numwalls, 1);
+    if (predecessors == NULL) {
+        return map_invalid(map, "Unable to allocate wall validation data");
+    }
+
+    for (s = 0; s < (uint16_t)map->numsectors; s++) {
+        DukeMapSector *sector = map->sectors[s];
+        int32_t first = sector->wallptr;
+        int32_t end = first + sector->wallnum;
+        int32_t w;
+
+        for (w = first; w < end; w++) {
+            int32_t point2 = map->walls[w]->point2;
+            if (point2 < first || point2 >= end) {
+                free(predecessors);
+                return map_invalid(map,
+                    "Wall %d point2 %d is outside sector %u", w, point2, s);
+            }
+
+            if (++predecessors[point2] != 1) {
+                free(predecessors);
+                return map_invalid(map, "Wall %d has multiple predecessors",
+                    point2);
+            }
+        }
+    }
+
+    for (s = 0; s < map->numwalls; s++) {
+        if (predecessors[s] != 1) {
+            free(predecessors);
+            return map_invalid(map, "Wall %u has no predecessor", s);
+        }
+    }
+
+    free(predecessors);
+    return true;
+}
+
+static long double orient(const DukeMapWall *a, const DukeMapWall *b,
+    const DukeMapWall *c)
+{
+    return ((long double)b->x - a->x) * ((long double)c->y - a->y)
+        - ((long double)b->y - a->y) * ((long double)c->x - a->x);
+}
+
+static bool between(int32_t value, int32_t a, int32_t b)
+{
+    return value >= (a < b ? a : b) && value <= (a > b ? a : b);
+}
+
+static bool on_segment(const DukeMapWall *a, const DukeMapWall *b,
+    const DukeMapWall *p)
+{
+    return orient(a, b, p) == 0.0L && between(p->x, a->x, b->x)
+        && between(p->y, a->y, b->y);
+}
+
+static int sign_long_double(long double value)
+{
+    return (value > 0.0L) - (value < 0.0L);
+}
+
+static bool segments_intersect(const DukeMapWall *a, const DukeMapWall *b,
+    const DukeMapWall *c, const DukeMapWall *d)
+{
+    long double o1 = orient(a, b, c), o2 = orient(a, b, d);
+    long double o3 = orient(c, d, a), o4 = orient(c, d, b);
+
+    if (sign_long_double(o1) != sign_long_double(o2)
+        && sign_long_double(o3) != sign_long_double(o4)) {
+        return true;
+    }
+    return (o1 == 0.0L && on_segment(a, b, c))
+        || (o2 == 0.0L && on_segment(a, b, d))
+        || (o3 == 0.0L && on_segment(c, d, a))
+        || (o4 == 0.0L && on_segment(c, d, b));
+}
+
+static bool point_in_sector(const DukeMapFile *map, uint16_t sectnum,
+    int32_t x, int32_t y, bool include_boundary)
+{
+    const DukeMapSector *sector = map->sectors[sectnum];
+    int32_t first = sector->wallptr, end = first + sector->wallnum, w;
+    bool inside = false;
+    DukeMapWall point = { .x = x, .y = y };
+
+    for (w = first; w < end; w++) {
+        const DukeMapWall *a = map->walls[w];
+        const DukeMapWall *b = map->walls[a->point2];
+        if (on_segment(a, b, &point)) {
+            return include_boundary;
+        }
+        if ((a->y > y) != (b->y > y)) {
+            long double at_x = a->x + ((long double)y - a->y)
+                * ((long double)b->x - a->x) / ((long double)b->y - a->y);
+            if (at_x > x) {
+                inside = !inside;
+            }
+        }
+    }
+    return inside;
+}
+
+bool duke_map_file_validate_geometry(DukeMapFile *map)
+{
+    uint16_t s;
+
+    if (!duke_map_file_validate_wall_loops(map)) {
+        return false;
+    }
+
+    for (s = 0; s < (uint16_t)map->numsectors; s++) {
+        DukeMapSector *sector = map->sectors[s];
+        int32_t first = sector->wallptr, end = first + sector->wallnum;
+        int32_t w, q;
+
+        for (w = first; w < end; w++) {
+            DukeMapWall *a = map->walls[w];
+            DukeMapWall *b = map->walls[a->point2];
+
+            if (a->x == b->x && a->y == b->y) {
+                return map_invalid(map, "Wall %d has zero length", w);
+            }
+
+            for (q = w + 1; q < end; q++) {
+                DukeMapWall *c = map->walls[q];
+                DukeMapWall *d = map->walls[c->point2];
+                if (a->point2 == q || c->point2 == w) {
+                    continue;
+                }
+                if (segments_intersect(a, b, c, d)) {
+                    return map_invalid(map,
+                        "Walls %d and %d intersect in sector %u", w, q, s);
+                }
+            }
+        }
+
+        /* Every point2 cycle must have at least three vertices and nonzero area. */
+        for (w = first; w < end; w++) {
+            int32_t current = w, count = 0;
+            long double area = 0.0L;
+            bool lowest = true;
+            do {
+                DukeMapWall *a = map->walls[current];
+                DukeMapWall *b = map->walls[a->point2];
+                if (current < w) {
+                    lowest = false;
+                }
+                area += (long double)a->x * b->y
+                    - (long double)b->x * a->y;
+                current = a->point2;
+                count++;
+            } while (current != w && count <= sector->wallnum);
+            if (lowest) {
+                if (count < 3 || area == 0.0L) {
+                    return map_invalid(map,
+                        "Wall loop beginning at %d is degenerate", w);
+                }
+                if ((w == first && area < 0.0L)
+                    || (w != first && area > 0.0L)) {
+                    return map_invalid(map,
+                        "Wall loop beginning at %d has invalid winding", w);
+                }
+            }
+        }
+    }
+    return true;
+}
+
+bool duke_map_file_validate_portals(DukeMapFile *map)
+{
+    uint16_t w;
+
+    if (!duke_map_file_validate_wall_loops(map)) {
+        return false;
+    }
+
+    for (w = 0; w < map->numwalls; w++) {
+        DukeMapWall *wall = map->walls[w];
+        int owner = map_wall_sector(map, w);
+        int32_t q = wall->nextwall, target = wall->nextsector;
+        DukeMapWall *other;
+
+        if (q == -1 && target == -1) {
+            continue;
+        }
+
+        if (q < 0 || q >= map->numwalls || target < 0
+            || target >= map->numsectors) {
+            return map_invalid(map, "Wall %u has an invalid portal reference", w);
+        }
+
+        other = map->walls[q];
+
+        if (map_wall_sector(map, (uint16_t)q) != target
+            || other->nextwall != (int16_t)w
+            || other->nextsector != owner) {
+            return map_invalid(map, "Wall %u portal is not reciprocal", w);
+        }
+
+        if (wall->x != map->walls[other->point2]->x
+            || wall->y != map->walls[other->point2]->y
+            || map->walls[wall->point2]->x != other->x
+            || map->walls[wall->point2]->y != other->y) {
+            return map_invalid(map,
+                "Wall %u portal endpoints do not match wall %d", w, q);
+        }
+    }
+    return true;
+}
+
+static long double sector_surface_z(const DukeMapFile *map, uint16_t sectnum,
+    bool floor, int32_t x, int32_t y)
+{
+    DukeMapSector *sector = map->sectors[sectnum];
+    DukeMapWall *a = map->walls[sector->wallptr];
+    DukeMapWall *b = map->walls[a->point2];
+    int16_t stat = floor ? sector->floorstat : sector->ceilingstat;
+    int16_t heinum = floor ? sector->floorheinum : sector->ceilingheinum;
+    long double z = floor ? sector->floorz : sector->ceilingz;
+    long double dx, dy, length, cross;
+
+    if ((stat & 2) == 0) {
+        return z;
+    }
+    dx = (long double)b->x - a->x;
+    dy = (long double)b->y - a->y;
+    length = sqrtl(dx * dx + dy * dy);
+    cross = dx * ((long double)y - a->y) - dy * ((long double)x - a->x);
+    /* Build computes cross/8 divided by (wall length)*32. */
+    return z + heinum * cross / (length * 256.0L);
+}
+
+bool duke_map_file_validate_vertical_sectors(DukeMapFile *map)
+{
+    uint16_t s;
+
+    if (!duke_map_file_validate_geometry(map)) {
+        return false;
+    }
+    for (s = 0; s < (uint16_t)map->numsectors; s++) {
+        DukeMapSector *sector = map->sectors[s];
+        int32_t w, end = sector->wallptr + sector->wallnum;
+        for (w = sector->wallptr; w < end; w++) {
+            DukeMapWall *point = map->walls[w];
+            if (sector_surface_z(map, s, false, point->x, point->y)
+                > sector_surface_z(map, s, true, point->x, point->y)) {
+                return map_invalid(map,
+                    "Sector %u ceiling is below its floor at wall %d", s, w);
+            }
+        }
+    }
+    return true;
+}
+
+bool duke_map_file_validate_sprites(DukeMapFile *map)
+{
+    uint16_t i;
+
+    if (!duke_map_file_validate_geometry(map)) {
+        return false;
+    }
+
+    for (i = 0; i < map->numsprites; i++) {
+        DukeMapSprite *sprite = map->sprites[i];
+        if (sprite->sectnum < 0 || sprite->sectnum >= map->numsectors) {
+            return map_invalid(map, "Sprite %u has invalid sector %d", i,
+                sprite->sectnum);
+        }
+
+        if (!point_in_sector(map, (uint16_t)sprite->sectnum,
+                sprite->x, sprite->y, true)) {
+            return map_invalid(map, "Sprite %u is outside sector %d", i,
+                sprite->sectnum);
+        }
+
+        if (sprite->statnum < 0 || sprite->statnum >= MAP_MAXSTATUS) {
+            return map_invalid(map, "Sprite %u has invalid status %d", i,
+                sprite->statnum);
+        }
+
+        if (sprite->ang < 0 || sprite->ang >= 2048) {
+            return map_invalid(map, "Sprite %u has invalid angle %d", i,
+                sprite->ang);
+        }
+    }
+    return true;
+}
+
+bool duke_map_file_validate_start_position(DukeMapFile *map)
+{
+    long double ceiling, floor;
+
+    if (!duke_map_file_validate_vertical_sectors(map)) {
+        return false;
+    }
+
+    if (map->cursectnum < 0 || map->cursectnum >= map->numsectors) {
+        return map_invalid(map, "Invalid starting sector: %d", map->cursectnum);
+    }
+
+    if (!point_in_sector(map, (uint16_t)map->cursectnum,
+            map->posx, map->posy, true)) {
+        return map_invalid(map, "Starting position is outside sector %d",
+            map->cursectnum);
+    }
+
+    ceiling = sector_surface_z(map, (uint16_t)map->cursectnum, false,
+        map->posx, map->posy);
+    floor = sector_surface_z(map, (uint16_t)map->cursectnum, true,
+        map->posx, map->posy);
+
+    if (map->posz < ceiling || map->posz > floor) {
+        return map_invalid(map,
+            "Starting Z coordinate is outside sector %d", map->cursectnum);
+    }
+
+    if (map->ang < 0 || map->ang >= 2048) {
+        return map_invalid(map, "Invalid starting angle: %d", map->ang);
+    }
+
+    return true;
 }
 
 void duke_map_file_reset_last_error(DukeMapFile *map)

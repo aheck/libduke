@@ -17,6 +17,7 @@ extern "C" {
 #define MAPV8_MAXSECTORS 4096
 #define MAPV8_MAXWALLS 16384
 #define MAPV8_MAXSPRITES 16384
+#define MAP_MAXSTATUS 1024
 
 struct DukeMapSector;
 struct DukeMapWall;
@@ -155,6 +156,18 @@ typedef struct DukeMapSprite {
 
 DukeMapFile* duke_map_file_new(void);
 bool duke_map_file_read_from_filename(DukeMapFile *map, const char *filename);
+/* Validate all structural, topological, geometric, and placement invariants. */
+bool duke_map_file_validate(DukeMapFile *map);
+/* The validators below may also be called independently. On failure, the first
+ * error is written to map->last_error. */
+bool duke_map_file_validate_structure(DukeMapFile *map);
+bool duke_map_file_validate_sector_wall_ownership(DukeMapFile *map);
+bool duke_map_file_validate_wall_loops(DukeMapFile *map);
+bool duke_map_file_validate_geometry(DukeMapFile *map);
+bool duke_map_file_validate_portals(DukeMapFile *map);
+bool duke_map_file_validate_vertical_sectors(DukeMapFile *map);
+bool duke_map_file_validate_sprites(DukeMapFile *map);
+bool duke_map_file_validate_start_position(DukeMapFile *map);
 void duke_map_file_reset_last_error(DukeMapFile *map);
 void duke_map_file_free(DukeMapFile *map);
 
