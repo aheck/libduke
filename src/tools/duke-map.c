@@ -58,6 +58,13 @@ int main(int argc, const char **argv)
         printf("extra: %d\n", sector->extra);
     }
 
+    res = duke_map_file_validate(map);
+    printf("\n\n");
+    printf("Validation status: %s\n", res ? "successful" : "failed");
+    if (res == false) {
+        printf("Validation error: %s\n", &map->last_error[0]);
+    }
+
     duke_map_file_free(map);
 
     return 0;
