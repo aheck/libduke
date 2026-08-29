@@ -42,17 +42,91 @@ void print_map_dump(DukeMapFile *map)
         DukeMapSector *sector = map->sectors[i];
         if (i > 0) {
             printf("\n");
-
         }
+        printf("Sector %d:\n", i);
         printf("wallptr: %d\n", sector->wallptr);
         printf("wallnum: %d\n", sector->wallnum);
         printf("ceilingz: %d\n", sector->ceilingz);
         printf("floorz: %d\n", sector->floorz);
+        printf("ceilingstat: %d\n", sector->ceilingstat);
+        printf("floorstat: %d\n", sector->floorstat);
         printf("ceilingpicnum: %d\n", sector->ceilingpicnum);
+        printf("ceilingheinum: %d\n", sector->ceilingheinum);
+        printf("ceilingshade: %d\n", sector->ceilingshade);
+        printf("ceilingpal: %u\n", sector->ceilingpal);
+        printf("ceilingxpanning: %u\n", sector->ceilingxpanning);
+        printf("ceilingypanning: %u\n", sector->ceilingypanning);
         printf("floorpicnum: %d\n", sector->floorpicnum);
+        printf("floorheinum: %d\n", sector->floorheinum);
+        printf("floorshade: %d\n", sector->floorshade);
+        printf("floorpal: %u\n", sector->floorpal);
+        printf("floorxpanning: %u\n", sector->floorxpanning);
+        printf("floorypanning: %u\n", sector->floorypanning);
+        printf("visibility: %u\n", sector->visibility);
+        printf("filler: %u\n", sector->filler);
         printf("lotag: %d\n", sector->lotag);
         printf("hitag: %d\n", sector->hitag);
         printf("extra: %d\n", sector->extra);
+    }
+
+    printf("\nWALLS:\n\n");
+
+    for (int i = 0; i < map->numwalls; i++) {
+        DukeMapWall *wall = map->walls[i];
+        if (i > 0) {
+            printf("\n");
+        }
+        printf("Wall %d:\n", i);
+        printf("x: %d\n", wall->x);
+        printf("y: %d\n", wall->y);
+        printf("point2: %d\n", wall->point2);
+        printf("nextwall: %d\n", wall->nextwall);
+        printf("nextsector: %d\n", wall->nextsector);
+        printf("cstat: %d\n", wall->cstat);
+        printf("picnum: %d\n", wall->picnum);
+        printf("overpicnum: %d\n", wall->overpicnum);
+        printf("shade: %d\n", wall->shade);
+        printf("pal: %u\n", wall->pal);
+        printf("xrepeat: %u\n", wall->xrepeat);
+        printf("yrepeat: %u\n", wall->yrepeat);
+        printf("xpanning: %u\n", wall->xpanning);
+        printf("ypanning: %u\n", wall->ypanning);
+        printf("lotag: %d\n", wall->lotag);
+        printf("hitag: %d\n", wall->hitag);
+        printf("extra: %d\n", wall->extra);
+    }
+
+    printf("\nSPRITES:\n\n");
+
+    for (int i = 0; i < map->numsprites; i++) {
+        DukeMapSprite *sprite = map->sprites[i];
+        if (i > 0) {
+            printf("\n");
+        }
+        printf("Sprite %d:\n", i);
+        printf("x: %d\n", sprite->x);
+        printf("y: %d\n", sprite->y);
+        printf("z: %d\n", sprite->z);
+        printf("cstat: %d\n", sprite->cstat);
+        printf("picnum: %d\n", sprite->picnum);
+        printf("shade: %d\n", sprite->shade);
+        printf("pal: %u\n", sprite->pal);
+        printf("clipdist: %u\n", sprite->clipdist);
+        printf("filler: %u\n", sprite->filler);
+        printf("xrepeat: %u\n", sprite->xrepeat);
+        printf("yrepeat: %u\n", sprite->yrepeat);
+        printf("xoffset: %d\n", sprite->xoffset);
+        printf("yoffset: %d\n", sprite->yoffset);
+        printf("sectnum: %d\n", sprite->sectnum);
+        printf("statnum: %d\n", sprite->statnum);
+        printf("ang: %d\n", sprite->ang);
+        printf("owner: %d\n", sprite->owner);
+        printf("xvel: %d\n", sprite->xvel);
+        printf("yvel: %d\n", sprite->yvel);
+        printf("zvel: %d\n", sprite->zvel);
+        printf("lotag: %d\n", sprite->lotag);
+        printf("hitag: %d\n", sprite->hitag);
+        printf("extra: %d\n", sprite->extra);
     }
 }
 
