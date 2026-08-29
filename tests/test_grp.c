@@ -1,29 +1,54 @@
 #include <check.h>
+#include <stdio.h>
+#include <string.h>
+#include <unistd.h>
 
 #include "libduke/grp.h"
 
-START_TEST(test_grp_init)
+START_TEST(test_grp_entries_are_read_and_accessed)
 {
-    struct duke_grp grp;
+    char filename[128];
+    const char first_name[12] = "FIRST.TXT";
+    const char second_name[12] = "SECOND.BIN";
+    const char first_data[] = "abc";
+    const char second_data[] = "12345";
+    uint32_t entry_count = 2;
+    uint32_t first_size = sizeof(first_data) - 1;
+    uint32_t second_size = sizeof(second_data) - 1;
+    void *data = NULL;
 
-    duke_grp_init(&grp);
+    snprintf(filename, sizeof(filename), "/tmp/libduke-grp-%ld.grp",
+        (long) getpid());
+    FILE *fp = fopen(filename, "wb");
+    ck_assert_ptr_nonnull(fp);
+    ck_assert_uint_eq(fwrite("KenSilverman", 1, 12, fp), 12);
+    ck_assert_uint_eq(fwrite(&entry_count, 1, 4, fp), 4);
+    ck_assert_uint_eq(fwrite(first_name, 1, 12, fp), 12);
+    ck_assert_uint_eq(fwrite(&first_size, 1, 4, fp), 4);
+    ck_assert_uint_eq(fwrite(second_name, 1, 12, fp), 12);
+    ck_assert_uint_eq(fwrite(&second_size, 1, 4, fp), 4);
+    ck_assert_uint_eq(fwrite(first_data, 1, first_size, fp), first_size);
+    ck_assert_uint_eq(fwrite(second_data, 1, second_size, fp), second_size);
+    ck_assert_int_eq(fclose(fp), 0);
 
-    ck_assert_uint_eq(grp.version, 1);
-    ck_assert_uint_eq(grp.entry_count, 0);
-}
-END_TEST
+    DukeGrpFile *grp = duke_grp_new();
+    ck_assert_ptr_nonnull(grp);
+    ck_assert(duke_grp_open_filename(grp, filename));
+    ck_assert(duke_grp_read_entries_sparse(grp));
 
-START_TEST(test_grp_add_entry)
-{
-    struct duke_grp grp;
+    DukeGrpFileEntry *entry = duke_grp_get_entry_by_index(grp, 1);
+    ck_assert_ptr_nonnull(entry);
+    ck_assert_str_eq(entry->filename, "SECOND.BIN");
+    ck_assert_uint_eq(entry->filesize, second_size);
+    ck_assert_ptr_null(duke_grp_get_entry_by_index(grp, entry_count));
 
-    duke_grp_init(&grp);
+    ck_assert_uint_eq(
+        duke_grp_get_file_data_by_filename(grp, "SECOND.BIN", &data),
+        second_size);
+    ck_assert_int_eq(memcmp(data, second_data, second_size), 0);
 
-    ck_assert_int_eq(duke_grp_add_entry(&grp), 0);
-    ck_assert_uint_eq(grp.entry_count, 1);
-
-    ck_assert_int_eq(duke_grp_add_entry(&grp), 0);
-    ck_assert_uint_eq(grp.entry_count, 2);
+    duke_grp_free(grp);
+    ck_assert_int_eq(remove(filename), 0);
 }
 END_TEST
 
@@ -36,8 +61,7 @@ grp_suite(void)
     suite = suite_create("grp");
     tc = tcase_create("core");
 
-    tcase_add_test(tc, test_grp_init);
-    tcase_add_test(tc, test_grp_add_entry);
+    tcase_add_test(tc, test_grp_entries_are_read_and_accessed);
 
     suite_add_tcase(suite, tc);
 

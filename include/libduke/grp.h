@@ -26,11 +26,13 @@ typedef struct DukeGrpFileEntry {
     uint8_t *data; // A pointer to the data of this file or NULL if it hasn't been fetched from disk, yet.
 } DukeGrpFileEntry;
 
+struct GList;
+
 typedef struct DukeGrpFile {
     FILE *fp;
     uint32_t data_section_offset; // Offset from the start of the file where the data section begins
     DukeGrpHeader header;
-    DukeGrpFileEntry *entries;
+    struct GList *entries;
     char last_error[256];
 } DukeGrpFile;
 
@@ -38,19 +40,12 @@ DukeGrpFile* duke_grp_new(void);
 bool duke_grp_open_filename(DukeGrpFile *file, const char *filename);
 bool duke_grp_read_entries_sparse(DukeGrpFile *file);
 bool duke_grp_read_entries_full(DukeGrpFile *file);
+DukeGrpFileEntry* duke_grp_get_entry_by_index(DukeGrpFile *file, uint32_t index);
 size_t duke_grp_get_file_data_by_index(DukeGrpFile *file, uint32_t index, void **data);
 size_t duke_grp_get_file_data_by_filename(DukeGrpFile *file, const char *filename, void **data);
 void duke_grp_reset_last_error(DukeGrpFile *file);
 bool duke_grp_close(DukeGrpFile *file);
 void duke_grp_free(DukeGrpFile *file);
-
-struct duke_grp {
-    unsigned int version;
-    size_t entry_count;
-};
-
-void duke_grp_init(struct duke_grp *grp);
-int duke_grp_add_entry(struct duke_grp *grp);
 
 #ifdef __cplusplus
 }
