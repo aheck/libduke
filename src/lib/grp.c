@@ -3,7 +3,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define _CLIB_IMPL
 #include "glist.h"
 
 static void duke_grp_clear_entries(DukeGrpFile *file)

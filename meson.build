@@ -14,6 +14,8 @@ math_dep = cc.find_library('m', required: false)
 
 libduke = library(
   'duke',
+  'src/lib/art.c',
+  'src/lib/glist.c',
   'src/lib/grp.c',
   'src/lib/map.c',
   include_directories: inc,
@@ -28,6 +30,7 @@ libduke_dep = declare_dependency(
 )
 
 install_headers(
+  'include/libduke/art.h',
   'include/libduke/grp.h',
   'include/libduke/map.h',
   subdir: 'libduke',
@@ -60,6 +63,17 @@ test_grp = executable(
 )
 
 test('grp', test_grp)
+
+test_art = executable(
+  'test-art',
+  'tests/test_art.c',
+  dependencies: [
+    libduke_dep,
+    check_dep,
+  ],
+)
+
+test('art', test_art)
 
 test_map = executable(
   'test-map',
