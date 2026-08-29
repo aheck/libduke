@@ -1,5 +1,6 @@
 #define _POSIX_C_SOURCE 200809L
 
+#include <dirent.h>
 #include <errno.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -13,6 +14,12 @@
 #define GRP_MAGIC "KenSilverman"
 #define GRP_MAGIC_SIZE 12
 
+typedef struct CreateEntry {
+    char name[13];
+    char *path;
+    uint32_t size;
+} CreateEntry;
+
 static void usage(void)
 {
     fprintf(stderr, "Usage: duke-grp ACTION GRPFILE [PARAMS]\n");
@@ -24,12 +31,14 @@ static void usage(void)
     fprintf(stderr, "    get GRPFILE FILENAME - Extract one file to the current directory\n\n");
     fprintf(stderr, "    append GRPFILE FILENAME              - Append a file to the archive\n");
     fprintf(stderr, "    replace GRPFILE FILE_IN_GRP FILENAME - Replace a file in the archive\n\n");
+    fprintf(stderr, "    create GRPFILE DIRECTORY - Create an archive from a directory\n\n");
     fprintf(stderr, "Examples:\n");
     fprintf(stderr, "    duke-grp list DUKE3D.GRP\n");
     fprintf(stderr, "    duke-grp get DUKE3D.GRP E1L1.MAP\n");
     fprintf(stderr, "    duke-grp extract DUKE3D.GRP\n");
     fprintf(stderr, "    duke-grp append DUKE3D.GRP NEW.MAP\n");
     fprintf(stderr, "    duke-grp replace DUKE3D.GRP E1L1.MAP NEW-E1L1.MAP\n");
+    fprintf(stderr, "    duke-grp create MYGAME.GRP ./game-data\n");
     exit(2);
 }
 
@@ -169,6 +178,225 @@ static bool read_local_file(const char *filename, uint8_t **data, uint32_t *size
     *data = buffer;
     *size = (uint32_t) length;
     return true;
+}
+
+static int compare_create_entries(const void *left, const void *right)
+{
+    const CreateEntry *a = left;
+    const CreateEntry *b = right;
+
+    return strcmp(a->name, b->name);
+}
+
+static void free_create_entries(CreateEntry *entries, size_t count)
+{
+    for (size_t i = 0; i < count; i++) {
+        free(entries[i].path);
+    }
+    free(entries);
+}
+
+static bool collect_directory(const char *directory, CreateEntry **result,
+    uint32_t *result_count)
+{
+    DIR *dir = opendir(directory);
+    struct dirent *item;
+    CreateEntry *entries = NULL;
+    size_t count = 0;
+
+    if (dir == NULL) {
+        fprintf(stderr, "ERROR: Failed to open directory %s: %s\n", directory,
+            strerror(errno));
+        return false;
+    }
+
+    for (;;) {
+        size_t directory_length;
+        size_t path_size;
+        char *path;
+        struct stat status;
+
+        errno = 0;
+        item = readdir(dir);
+        if (item == NULL) {
+            if (errno != 0) {
+                fprintf(stderr, "ERROR: Failed while reading directory %s: %s\n",
+                    directory, strerror(errno));
+                goto error;
+            }
+            break;
+        }
+        if (strcmp(item->d_name, ".") == 0 || strcmp(item->d_name, "..") == 0) {
+            continue;
+        }
+        directory_length = strlen(directory);
+        path_size = directory_length + strlen(item->d_name) + 2;
+        path = malloc(path_size);
+        if (path == NULL) {
+            fprintf(stderr, "ERROR: Out of memory while reading %s\n", directory);
+            goto error;
+        }
+        snprintf(path, path_size, "%s%s%s", directory,
+            directory_length > 0 && directory[directory_length - 1] == '/' ? "" : "/",
+            item->d_name);
+        if (stat(path, &status) != 0) {
+            fprintf(stderr, "ERROR: Failed to inspect %s: %s\n", path,
+                strerror(errno));
+            free(path);
+            goto error;
+        }
+        if (!S_ISREG(status.st_mode)) {
+            free(path);
+            continue;
+        }
+        if (item->d_name[0] == '\0' || strlen(item->d_name) > 12
+                || (uint64_t) status.st_size > UINT32_MAX) {
+            fprintf(stderr, "ERROR: %s must have a 1 to 12 character name and be at most 4 GiB\n",
+                path);
+            free(path);
+            goto error;
+        }
+        if (count == UINT32_MAX) {
+            fprintf(stderr, "ERROR: Too many files in %s\n", directory);
+            free(path);
+            goto error;
+        }
+
+        CreateEntry *grown = realloc(entries, (count + 1) * sizeof(*entries));
+        if (grown == NULL) {
+            fprintf(stderr, "ERROR: Out of memory while reading %s\n", directory);
+            free(path);
+            goto error;
+        }
+        entries = grown;
+        memset(&entries[count], 0, sizeof(entries[count]));
+        memcpy(entries[count].name, item->d_name, strlen(item->d_name));
+        entries[count].path = path;
+        entries[count].size = (uint32_t) status.st_size;
+        count++;
+    }
+    if (closedir(dir) != 0) {
+        fprintf(stderr, "ERROR: Failed to close directory %s\n", directory);
+        free_create_entries(entries, count);
+        return false;
+    }
+
+    if (count > 1) {
+        qsort(entries, count, sizeof(*entries), compare_create_entries);
+    }
+    *result = entries;
+    *result_count = (uint32_t) count;
+    return true;
+
+error:
+    closedir(dir);
+    free_create_entries(entries, count);
+    return false;
+}
+
+static bool create_archive(const char *archive_name, const char *directory)
+{
+    CreateEntry *entries = NULL;
+    uint32_t count = 0;
+    size_t template_size = strlen(archive_name) + sizeof(".tmp.XXXXXX");
+    char *template = NULL;
+    FILE *output = NULL;
+    int fd = -1;
+    bool ok = false;
+    struct stat status;
+
+    if (lstat(archive_name, &status) == 0) {
+        fprintf(stderr, "ERROR: Archive already exists: %s\n", archive_name);
+        return false;
+    }
+    if (errno != ENOENT) {
+        fprintf(stderr, "ERROR: Cannot inspect %s: %s\n", archive_name,
+            strerror(errno));
+        return false;
+    }
+    if (!collect_directory(directory, &entries, &count)) {
+        return false;
+    }
+
+    template = malloc(template_size);
+    if (template == NULL) {
+        fprintf(stderr, "ERROR: Cannot allocate archive output\n");
+        goto cleanup;
+    }
+    snprintf(template, template_size, "%s.tmp.XXXXXX", archive_name);
+    fd = mkstemp(template);
+    if (fd < 0) {
+        fprintf(stderr, "ERROR: Failed to create temporary archive: %s\n",
+            strerror(errno));
+        goto cleanup;
+    }
+    mode_t mask = umask(0);
+    umask(mask);
+    (void) fchmod(fd, 0666 & ~mask);
+    output = fdopen(fd, "wb");
+    if (output == NULL) {
+        fprintf(stderr, "ERROR: Failed to open temporary archive: %s\n",
+            strerror(errno));
+        goto cleanup;
+    }
+    fd = -1;
+
+    if (fwrite(GRP_MAGIC, 1, GRP_MAGIC_SIZE, output) != GRP_MAGIC_SIZE
+            || fwrite(&count, 1, 4, output) != 4) {
+        goto write_error;
+    }
+    for (uint32_t i = 0; i < count; i++) {
+        if (fwrite(entries[i].name, 1, 12, output) != 12
+                || fwrite(&entries[i].size, 1, 4, output) != 4) {
+            goto write_error;
+        }
+    }
+    for (uint32_t i = 0; i < count; i++) {
+        uint8_t *data;
+        uint32_t size;
+
+        if (!read_local_file(entries[i].path, &data, &size)) {
+            goto cleanup;
+        }
+        if (size != entries[i].size || fwrite(data, 1, size, output) != size) {
+            free(data);
+            goto write_error;
+        }
+        free(data);
+    }
+    if (fflush(output) != 0 || fsync(fileno(output)) != 0) {
+        goto write_error;
+    }
+    if (fclose(output) != 0) {
+        output = NULL;
+        goto write_error;
+    }
+    output = NULL;
+    if (link(template, archive_name) != 0) {
+        fprintf(stderr, "ERROR: Failed to create %s: %s\n", archive_name,
+            strerror(errno));
+        goto cleanup;
+    }
+    if (unlink(template) != 0) {
+        fprintf(stderr, "WARNING: Failed to remove temporary name %s\n", template);
+    }
+    ok = true;
+    goto cleanup;
+
+write_error:
+    fprintf(stderr, "ERROR: Failed to write temporary archive\n");
+cleanup:
+    if (output != NULL) {
+        fclose(output);
+    } else if (fd >= 0) {
+        close(fd);
+    }
+    if (!ok && template != NULL) {
+        unlink(template);
+    }
+    free(template);
+    free_create_entries(entries, count);
+    return ok;
 }
 
 static const char *base_name(const char *filename)
@@ -327,7 +555,8 @@ static bool valid_argument_count(const char *action, int argc)
             || strcmp(action, "validate") == 0 || strcmp(action, "extract") == 0) {
         return argc == 3;
     }
-    if (strcmp(action, "get") == 0 || strcmp(action, "append") == 0) {
+    if (strcmp(action, "get") == 0 || strcmp(action, "append") == 0
+            || strcmp(action, "create") == 0) {
         return argc == 4;
     }
     if (strcmp(action, "replace") == 0) {
@@ -350,6 +579,9 @@ int main(int argc, char **argv)
     archive_name = argv[2];
     if (!valid_argument_count(action, argc)) {
         usage();
+    }
+    if (strcmp(action, "create") == 0) {
+        return create_archive(archive_name, argv[3]) ? 0 : 1;
     }
     file = open_archive(archive_name, strcmp(action, "info") != 0);
     if (file == NULL) {
