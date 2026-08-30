@@ -50,6 +50,13 @@ executable(
   install: true,
 )
 
+executable(
+  'duke-art',
+  'src/tools/duke-art.c',
+  dependencies: libduke_dep,
+  install: true,
+)
+
 # Conan's PkgConfigDeps generates check.pc for us.
 check_dep = dependency('check')
 

@@ -7,12 +7,7 @@
 
 static int16_t read_i16_le(const uint8_t *data)
 {
-    uint16_t raw;
-    int16_t value;
-
-    raw = (uint16_t)data[0] | ((uint16_t)data[1] << 8);
-    memcpy(&value, &raw, sizeof(value));
-    return value;
+    return (uint16_t)data[0] | ((uint16_t)data[1] << 8);
 }
 
 static uint16_t read_u16_le(const uint8_t *data)
@@ -22,15 +17,10 @@ static uint16_t read_u16_le(const uint8_t *data)
 
 static int32_t read_i32_le(const uint8_t *data)
 {
-    uint32_t raw;
-    int32_t value;
-
-    raw = (uint32_t)data[0]
+    return (uint32_t)data[0]
         | ((uint32_t)data[1] << 8)
         | ((uint32_t)data[2] << 16)
         | ((uint32_t)data[3] << 24);
-    memcpy(&value, &raw, sizeof(value));
-    return value;
 }
 
 static void duke_map_file_clear(DukeMapFile *map)
