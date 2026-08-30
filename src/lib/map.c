@@ -27,27 +27,34 @@ static void duke_map_file_clear(DukeMapFile *map)
 {
     uint16_t i;
 
+    // free all sectors
     if (map->sectors != NULL) {
         for (i = 0; i < (uint16_t)map->numsectors; i++) {
             duke_map_sector_free(map->sectors[i]);
         }
     }
+
     free(map->sectors);
 
+    // free all walls
     if (map->walls != NULL) {
         for (i = 0; i < map->numwalls; i++) {
             duke_map_wall_free(map->walls[i]);
         }
     }
+
     free(map->walls);
 
+    // free all sprites
     if (map->sprites != NULL) {
         for (i = 0; i < map->numsprites; i++) {
             duke_map_sprite_free(map->sprites[i]);
         }
     }
+
     free(map->sprites);
 
+    // reset all primitive attributes
     map->numsectors = 0;
     map->sectors = NULL;
     map->numwalls = 0;
@@ -99,6 +106,9 @@ bool duke_map_file_read_from_filename(DukeMapFile *map, const char *filename)
 
     duke_map_file_reset_last_error(map);
 
+    //
+    // Open the file
+    //
     fp = fopen(filename, "rb");
     if (fp == NULL) {
         snprintf(map->last_error, sizeof(map->last_error),
@@ -114,6 +124,9 @@ bool duke_map_file_read_from_filename(DukeMapFile *map, const char *filename)
         return false;
     }
 
+    //
+    // Read the map header from disk
+    //
     if (fread(header, sizeof(header), 1, fp) != 1) {
         snprintf(map->last_error, sizeof(map->last_error),
             "Unable to read map header");
@@ -128,6 +141,9 @@ bool duke_map_file_read_from_filename(DukeMapFile *map, const char *filename)
     loaded->cursectnum = read_i16_le(header + 18);
     loaded->numsectors = read_i16_le(header + 20);
 
+    //
+    // Validate the map version and the limits for sectors, walls, and sprites
+    //
     if (loaded->mapversion == 7) {
         maxsectors = MAPV7_MAXSECTORS;
         maxwalls = MAPV7_MAXWALLS;
@@ -142,6 +158,9 @@ bool duke_map_file_read_from_filename(DukeMapFile *map, const char *filename)
         goto fail;
     }
 
+    //
+    // Validate the number of sectors
+    //
     if (loaded->numsectors < 0
         || (uint16_t)loaded->numsectors > maxsectors) {
         snprintf(map->last_error, sizeof(map->last_error),
@@ -149,6 +168,9 @@ bool duke_map_file_read_from_filename(DukeMapFile *map, const char *filename)
         goto fail;
     }
 
+    //
+    //  Allocate memory for the sectors
+    //
     if (loaded->numsectors > 0) {
         loaded->sectors = calloc((size_t)loaded->numsectors,
             sizeof(*loaded->sectors));
@@ -159,6 +181,9 @@ bool duke_map_file_read_from_filename(DukeMapFile *map, const char *filename)
         }
     }
 
+    //
+    // Read the sectors form disk
+    //
     for (i = 0; i < (uint16_t)loaded->numsectors; i++) {
         loaded->sectors[i] = duke_map_sector_new();
         if (loaded->sectors[i] == NULL
@@ -169,6 +194,9 @@ bool duke_map_file_read_from_filename(DukeMapFile *map, const char *filename)
         }
     }
 
+    //
+    // Read the number of walls from disk
+    //
     if (fread(count_data, sizeof(count_data), 1, fp) != 1) {
         snprintf(map->last_error, sizeof(map->last_error),
             "Unable to read wall count");
@@ -181,6 +209,9 @@ bool duke_map_file_read_from_filename(DukeMapFile *map, const char *filename)
         goto fail;
     }
 
+    //
+    // Allocate memory for the walls
+    //
     if (loaded->numwalls > 0) {
         loaded->walls = calloc(loaded->numwalls, sizeof(*loaded->walls));
         if (loaded->walls == NULL) {
@@ -190,6 +221,9 @@ bool duke_map_file_read_from_filename(DukeMapFile *map, const char *filename)
         }
     }
 
+    //
+    // Read the walls from disk
+    //
     for (i = 0; i < loaded->numwalls; i++) {
         loaded->walls[i] = duke_map_wall_new();
         if (loaded->walls[i] == NULL
@@ -200,6 +234,9 @@ bool duke_map_file_read_from_filename(DukeMapFile *map, const char *filename)
         }
     }
 
+    //
+    // Read the number of sprites from disk
+    //
     if (fread(count_data, sizeof(count_data), 1, fp) != 1) {
         snprintf(map->last_error, sizeof(map->last_error),
             "Unable to read sprite count");
@@ -212,6 +249,9 @@ bool duke_map_file_read_from_filename(DukeMapFile *map, const char *filename)
         goto fail;
     }
 
+    //
+    // Read the number of sprites from disk
+    //
     if (loaded->numsprites > 0) {
         loaded->sprites = calloc(loaded->numsprites,
             sizeof(*loaded->sprites));
@@ -222,6 +262,9 @@ bool duke_map_file_read_from_filename(DukeMapFile *map, const char *filename)
         }
     }
 
+    //
+    // Read the sprites from disk
+    //
     for (i = 0; i < loaded->numsprites; i++) {
         loaded->sprites[i] = duke_map_sprite_new();
         if (loaded->sprites[i] == NULL
@@ -232,6 +275,9 @@ bool duke_map_file_read_from_filename(DukeMapFile *map, const char *filename)
         }
     }
 
+    //
+    // Cleanup
+    //
     fclose(fp);
     duke_map_file_clear(map);
     *map = *loaded;
