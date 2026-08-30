@@ -12,7 +12,7 @@ inc = include_directories('include')
 cc = meson.get_compiler('c')
 math_dep = cc.find_library('m', required: false)
 
-libduke = library(
+libduke = both_libraries(
   'duke',
   'src/lib/art.c',
   'src/lib/glist.c',
@@ -29,6 +29,11 @@ libduke_dep = declare_dependency(
   include_directories: inc,
 )
 
+libduke_static_dep = declare_dependency(
+  link_with: libduke.get_static_lib(),
+  include_directories: inc,
+)
+
 install_headers(
   'include/libduke/art.h',
   'include/libduke/grp.h',
@@ -39,21 +44,21 @@ install_headers(
 executable(
   'duke-map',
   'src/tools/duke-map.c',
-  dependencies: libduke_dep,
+  dependencies: libduke_static_dep,
   install: true,
 )
 
 executable(
   'duke-grp',
   'src/tools/duke-grp.c',
-  dependencies: libduke_dep,
+  dependencies: libduke_static_dep,
   install: true,
 )
 
 executable(
   'duke-art',
   'src/tools/duke-art.c',
-  dependencies: libduke_dep,
+  dependencies: libduke_static_dep,
   install: true,
 )
 
