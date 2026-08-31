@@ -5,6 +5,14 @@
 
 #include "glist.h"
 
+static uint32_t read_u32_le(const uint8_t *data)
+{
+    return (uint32_t)data[0]
+        | ((uint32_t)data[1] << 8)
+        | ((uint32_t)data[2] << 16)
+        | ((uint32_t)data[3] << 24);
+}
+
 static void duke_grp_clear_entries(DukeGrpFile *file)
 {
     GList *node;
@@ -45,6 +53,7 @@ DukeGrpFile* duke_grp_new(void)
 
 bool duke_grp_open_filename(DukeGrpFile *file, const char *filename)
 {
+    uint8_t count_data[4];
     size_t num_bytes;
 
     if (file == NULL) {
@@ -64,17 +73,19 @@ bool duke_grp_open_filename(DukeGrpFile *file, const char *filename)
         return false;
     }
 
-    num_bytes = fread(&file->header.entry_count, 1, 4, file->fp);
-    if (num_bytes != 4) {
+    if (fread(count_data, 1, sizeof(count_data), file->fp)
+            != sizeof(count_data)) {
         duke_grp_close(file);
         return false;
     }
+    file->header.entry_count = read_u32_le(count_data);
 
     return true;
 }
 
 bool duke_grp_read_entries_sparse(DukeGrpFile *file)
 {
+    uint8_t size_data[4];
     size_t num_bytes;
     long archive_size;
 
@@ -105,12 +116,13 @@ bool duke_grp_read_entries_sparse(DukeGrpFile *file)
         }
         entry->filename[12] = '\0';
 
-        num_bytes = fread(&entry->filesize, 1, 4, file->fp);
-        if (num_bytes != 4) {
+        if (fread(size_data, 1, sizeof(size_data), file->fp)
+                != sizeof(size_data)) {
             free(entry);
             duke_grp_clear_entries(file);
             return false;
         }
+        entry->filesize = read_u32_le(size_data);
 
         if ((uint64_t) file_offset + entry->filesize > UINT32_MAX) {
             free(entry);
