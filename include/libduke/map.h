@@ -177,6 +177,35 @@ DukeMapFile* duke_map_file_new(void);
 bool duke_map_file_read_from_filename(DukeMapFile *map, const char *filename);
 
 /**
+ * @brief Create a sprite and append it to a map.
+ *
+ * The returned sprite is owned by @p map and remains valid until the map is
+ * freed or its contents are replaced. The caller may populate its fields
+ * directly. On failure, the map is left unchanged and `map->last_error`
+ * contains a diagnostic when @p map is non-`NULL`.
+ *
+ * @param map Map that will own the new sprite. Its map version must be
+ * supported and its current sprite representation must be well-formed.
+ * @return The newly allocated sprite, or `NULL` on invalid input, when the
+ * format's sprite limit has been reached, or on allocation failure.
+ */
+DukeMapSprite* duke_map_file_add_sprite(DukeMapFile *map);
+
+/**
+ * @brief Remove and free a sprite owned by a map.
+ *
+ * The remaining sprites retain their relative order. After a successful call,
+ * @p sprite is no longer valid. On failure, the map and sprite are unchanged
+ * and `map->last_error` contains a diagnostic when @p map is non-`NULL`.
+ *
+ * @param map Map that owns the sprite.
+ * @param sprite Sprite previously added to or loaded with @p map.
+ * @return `true` when the sprite was removed; `false` for a `NULL` argument,
+ * malformed sprite storage, or a sprite that is not owned by the map.
+ */
+bool duke_map_file_remove_sprite(DukeMapFile *map, DukeMapSprite *sprite);
+
+/**
  * @brief Validate all structural, topological, geometric, and placement rules.
  *
  * This runs each specialized validator in dependency order and stops at the

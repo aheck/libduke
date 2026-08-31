@@ -343,6 +343,99 @@ static bool map_limits(const DukeMapFile *map, uint16_t *maxsectors,
     return false;
 }
 
+DukeMapSprite* duke_map_file_add_sprite(DukeMapFile *map)
+{
+    DukeMapSprite **sprites;
+    DukeMapSprite *sprite;
+    uint16_t maxsectors, maxwalls, maxsprites;
+
+    if (map == NULL) {
+        return NULL;
+    }
+
+    duke_map_file_reset_last_error(map);
+    if (!map_limits(map, &maxsectors, &maxwalls, &maxsprites)) {
+        map_invalid(map, "Unsupported map version: %d", map->mapversion);
+        return NULL;
+    }
+
+    if (map->numsprites > 0 && map->sprites == NULL) {
+        map_invalid(map, "Sprite array is NULL");
+        return NULL;
+    }
+
+    if (map->numsprites >= maxsprites) {
+        map_invalid(map, "Sprite limit reached: %u", maxsprites);
+        return NULL;
+    }
+
+    sprite = duke_map_sprite_new();
+    if (sprite == NULL) {
+        map_invalid(map, "Unable to allocate sprite");
+        return NULL;
+    }
+
+    sprites = realloc(map->sprites,
+        ((size_t)map->numsprites + 1) * sizeof(*map->sprites));
+    if (sprites == NULL) {
+        duke_map_sprite_free(sprite);
+        map_invalid(map, "Unable to grow sprite array");
+        return NULL;
+    }
+
+    map->sprites = sprites;
+    map->sprites[map->numsprites] = sprite;
+    map->numsprites++;
+    return sprite;
+}
+
+bool duke_map_file_remove_sprite(DukeMapFile *map, DukeMapSprite *sprite)
+{
+    DukeMapSprite **sprites;
+    uint16_t i;
+
+    if (map == NULL || sprite == NULL) {
+        return false;
+    }
+
+    duke_map_file_reset_last_error(map);
+    if (map->numsprites == 0 || map->sprites == NULL) {
+        return map_invalid(map, "Sprite is not owned by map");
+    }
+
+    for (i = 0; i < map->numsprites; i++) {
+        if (map->sprites[i] == sprite) {
+            break;
+        }
+    }
+
+    if (i == map->numsprites) {
+        return map_invalid(map, "Sprite is not owned by map");
+    }
+
+    duke_map_sprite_free(sprite);
+    if (i + 1 < map->numsprites) {
+        memmove(&map->sprites[i], &map->sprites[i + 1],
+            ((size_t)map->numsprites - i - 1) * sizeof(*map->sprites));
+    }
+
+    map->numsprites--;
+    if (map->numsprites == 0) {
+        free(map->sprites);
+        map->sprites = NULL;
+        return true;
+    }
+
+    /* Shrinking is optional: keep the valid original allocation if it fails. */
+    sprites = realloc(map->sprites,
+        (size_t)map->numsprites * sizeof(*map->sprites));
+    if (sprites != NULL) {
+        map->sprites = sprites;
+    }
+
+    return true;
+}
+
 bool duke_map_file_validate_structure(DukeMapFile *map)
 {
     uint16_t maxsectors, maxwalls, maxsprites, i;

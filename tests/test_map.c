@@ -117,6 +117,85 @@ START_TEST(test_valid_map)
 }
 END_TEST
 
+START_TEST(test_add_sprite_appends_owned_sprite)
+{
+    DukeMapFile *map = square_map();
+    DukeMapSprite *first;
+    DukeMapSprite *second;
+
+    first = duke_map_file_add_sprite(map);
+    ck_assert_ptr_nonnull(first);
+    ck_assert_uint_eq(map->numsprites, 1);
+    ck_assert_ptr_eq(map->sprites[0], first);
+
+    first->x = 512;
+    second = duke_map_file_add_sprite(map);
+    ck_assert_ptr_nonnull(second);
+    ck_assert_uint_eq(map->numsprites, 2);
+    ck_assert_ptr_eq(map->sprites[0], first);
+    ck_assert_ptr_eq(map->sprites[1], second);
+    ck_assert_int_eq(map->sprites[0]->x, 512);
+    ck_assert_str_eq(map->last_error, "");
+    duke_map_file_free(map);
+}
+END_TEST
+
+START_TEST(test_add_sprite_rejects_format_limit)
+{
+    DukeMapFile *map = square_map();
+
+    map->numsprites = MAPV7_MAXSPRITES;
+    map->sprites = calloc(map->numsprites, sizeof(*map->sprites));
+    ck_assert_ptr_nonnull(map->sprites);
+    ck_assert_ptr_null(duke_map_file_add_sprite(map));
+    ck_assert_uint_eq(map->numsprites, MAPV7_MAXSPRITES);
+    ck_assert(strstr(map->last_error, "limit") != NULL);
+
+    free(map->sprites);
+    map->sprites = NULL;
+    map->numsprites = 0;
+    duke_map_file_free(map);
+}
+END_TEST
+
+START_TEST(test_remove_sprite_frees_and_compacts_array)
+{
+    DukeMapFile *map = square_map();
+    DukeMapSprite *first = duke_map_file_add_sprite(map);
+    DukeMapSprite *second = duke_map_file_add_sprite(map);
+    DukeMapSprite *third = duke_map_file_add_sprite(map);
+
+    ck_assert_ptr_nonnull(first);
+    ck_assert_ptr_nonnull(second);
+    ck_assert_ptr_nonnull(third);
+    ck_assert(duke_map_file_remove_sprite(map, second));
+    ck_assert_uint_eq(map->numsprites, 2);
+    ck_assert_ptr_eq(map->sprites[0], first);
+    ck_assert_ptr_eq(map->sprites[1], third);
+    ck_assert_str_eq(map->last_error, "");
+
+    ck_assert(duke_map_file_remove_sprite(map, first));
+    ck_assert(duke_map_file_remove_sprite(map, third));
+    ck_assert_uint_eq(map->numsprites, 0);
+    ck_assert_ptr_null(map->sprites);
+    duke_map_file_free(map);
+}
+END_TEST
+
+START_TEST(test_remove_sprite_rejects_unowned_sprite)
+{
+    DukeMapFile *map = square_map();
+    DukeMapSprite *sprite = duke_map_sprite_new();
+
+    ck_assert_ptr_nonnull(sprite);
+    ck_assert(!duke_map_file_remove_sprite(map, sprite));
+    ck_assert_uint_eq(map->numsprites, 0);
+    ck_assert(strstr(map->last_error, "not owned") != NULL);
+    duke_map_sprite_free(sprite);
+    duke_map_file_free(map);
+}
+END_TEST
+
 START_TEST(test_individual_validator_reports_error)
 {
     DukeMapFile *map = square_map();
@@ -348,6 +427,10 @@ static Suite *map_suite(void)
     TCase *tc = tcase_create("validation");
 
     tcase_add_test(tc, test_valid_map);
+    tcase_add_test(tc, test_add_sprite_appends_owned_sprite);
+    tcase_add_test(tc, test_add_sprite_rejects_format_limit);
+    tcase_add_test(tc, test_remove_sprite_frees_and_compacts_array);
+    tcase_add_test(tc, test_remove_sprite_rejects_unowned_sprite);
     tcase_add_test(tc, test_individual_validator_reports_error);
     tcase_add_test(tc, test_structure_rejects_unsupported_version);
     tcase_add_test(tc, test_structure_rejects_missing_array);
