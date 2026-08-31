@@ -177,6 +177,21 @@ DukeMapFile* duke_map_file_new(void);
 bool duke_map_file_read_from_filename(DukeMapFile *map, const char *filename);
 
 /**
+ * @brief Save a map to a Build map file.
+ *
+ * Map format versions 7, 8, and 9 are written in their little-endian binary
+ * representation. The map is structurally validated before the destination is
+ * opened. On failure, a diagnostic is stored in `map->last_error` when @p map
+ * is non-`NULL`.
+ *
+ * @param map Map to save.
+ * @param filename Path of the file to create or replace.
+ * @return `true` when the complete map was written and closed successfully;
+ * `false` for invalid arguments, invalid map structure, or an I/O error.
+ */
+bool duke_map_file_write_to_filename(DukeMapFile *map, const char *filename);
+
+/**
  * @brief Create a sprite and append it to a map.
  *
  * The returned sprite is owned by @p map and remains valid until the map is

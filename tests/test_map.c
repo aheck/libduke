@@ -1,6 +1,7 @@
 #include <check.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #include "libduke/map.h"
 
@@ -114,6 +115,46 @@ START_TEST(test_valid_map)
     ck_assert(duke_map_file_validate(map));
     ck_assert_str_eq(map->last_error, "");
     duke_map_file_free(map);
+}
+END_TEST
+
+START_TEST(test_map_write_and_read_round_trip)
+{
+    char filename[128];
+    DukeMapFile *map = square_map();
+    DukeMapFile *loaded = duke_map_file_new();
+    DukeMapSprite *sprite = duke_map_file_add_sprite(map);
+
+    snprintf(filename, sizeof(filename), "/tmp/libduke-map-%ld.map",
+        (long)getpid());
+    ck_assert_ptr_nonnull(loaded);
+    ck_assert_ptr_nonnull(sprite);
+    sprite->x = 256;
+    sprite->y = 768;
+    sprite->z = 512;
+    sprite->picnum = 123;
+    sprite->shade = -7;
+    sprite->sectnum = 0;
+    sprite->statnum = 0;
+    sprite->ang = 1024;
+
+    ck_assert(duke_map_file_write_to_filename(map, filename));
+    ck_assert_str_eq(map->last_error, "");
+    ck_assert(duke_map_file_read_from_filename(loaded, filename));
+    ck_assert_int_eq(loaded->mapversion, map->mapversion);
+    ck_assert_int_eq(loaded->numsectors, map->numsectors);
+    ck_assert_uint_eq(loaded->numwalls, map->numwalls);
+    ck_assert_uint_eq(loaded->numsprites, 1);
+    ck_assert_int_eq(loaded->walls[2]->x, map->walls[2]->x);
+    ck_assert_int_eq(loaded->sprites[0]->x, 256);
+    ck_assert_int_eq(loaded->sprites[0]->y, 768);
+    ck_assert_int_eq(loaded->sprites[0]->picnum, 123);
+    ck_assert_int_eq(loaded->sprites[0]->shade, -7);
+    ck_assert_int_eq(loaded->sprites[0]->ang, 1024);
+
+    duke_map_file_free(loaded);
+    duke_map_file_free(map);
+    ck_assert_int_eq(remove(filename), 0);
 }
 END_TEST
 
@@ -427,6 +468,7 @@ static Suite *map_suite(void)
     TCase *tc = tcase_create("validation");
 
     tcase_add_test(tc, test_valid_map);
+    tcase_add_test(tc, test_map_write_and_read_round_trip);
     tcase_add_test(tc, test_add_sprite_appends_owned_sprite);
     tcase_add_test(tc, test_add_sprite_rejects_format_limit);
     tcase_add_test(tc, test_remove_sprite_frees_and_compacts_array);

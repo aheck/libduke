@@ -5,6 +5,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+static bool map_invalid(DukeMapFile *map, const char *format, ...);
+
 static int16_t read_i16_le(const uint8_t *data)
 {
     return (uint16_t)data[0] | ((uint16_t)data[1] << 8);
@@ -21,6 +23,20 @@ static int32_t read_i32_le(const uint8_t *data)
         | ((uint32_t)data[1] << 8)
         | ((uint32_t)data[2] << 16)
         | ((uint32_t)data[3] << 24);
+}
+
+static void write_u16_le(uint8_t *data, uint16_t value)
+{
+    data[0] = (uint8_t)value;
+    data[1] = (uint8_t)(value >> 8);
+}
+
+static void write_u32_le(uint8_t *data, uint32_t value)
+{
+    data[0] = (uint8_t)value;
+    data[1] = (uint8_t)(value >> 8);
+    data[2] = (uint8_t)(value >> 16);
+    data[3] = (uint8_t)(value >> 24);
 }
 
 static void duke_map_file_clear(DukeMapFile *map)
@@ -288,6 +304,146 @@ fail:
     fclose(fp);
     duke_map_file_free(loaded);
     return false;
+}
+
+bool duke_map_file_write_to_filename(DukeMapFile *map, const char *filename)
+{
+    uint8_t data[44];
+    FILE *fp;
+    uint16_t i;
+
+    if (map == NULL || filename == NULL) {
+        return false;
+    }
+
+    if (!duke_map_file_validate_structure(map)) {
+        return false;
+    }
+
+    fp = fopen(filename, "wb");
+    if (fp == NULL) {
+        return map_invalid(map, "Unable to open map file for writing: %s",
+            filename);
+    }
+
+    /* Write the header and sectors. */
+    write_u32_le(data + 0, (uint32_t)map->mapversion);
+    write_u32_le(data + 4, (uint32_t)map->posx);
+    write_u32_le(data + 8, (uint32_t)map->posy);
+    write_u32_le(data + 12, (uint32_t)map->posz);
+    write_u16_le(data + 16, (uint16_t)map->ang);
+    write_u16_le(data + 18, (uint16_t)map->cursectnum);
+    write_u16_le(data + 20, (uint16_t)map->numsectors);
+    if (fwrite(data, 22, 1, fp) != 1) {
+        goto write_error;
+    }
+
+    for (i = 0; i < (uint16_t)map->numsectors; i++) {
+        const DukeMapSector *sector = map->sectors[i];
+
+        write_u16_le(data + 0, (uint16_t)sector->wallptr);
+        write_u16_le(data + 2, (uint16_t)sector->wallnum);
+        write_u32_le(data + 4, (uint32_t)sector->ceilingz);
+        write_u32_le(data + 8, (uint32_t)sector->floorz);
+        write_u16_le(data + 12, (uint16_t)sector->ceilingstat);
+        write_u16_le(data + 14, (uint16_t)sector->floorstat);
+        write_u16_le(data + 16, (uint16_t)sector->ceilingpicnum);
+        write_u16_le(data + 18, (uint16_t)sector->ceilingheinum);
+        data[20] = (uint8_t)sector->ceilingshade;
+        data[21] = sector->ceilingpal;
+        data[22] = sector->ceilingxpanning;
+        data[23] = sector->ceilingypanning;
+        write_u16_le(data + 24, (uint16_t)sector->floorpicnum);
+        write_u16_le(data + 26, (uint16_t)sector->floorheinum);
+        data[28] = (uint8_t)sector->floorshade;
+        data[29] = sector->floorpal;
+        data[30] = sector->floorxpanning;
+        data[31] = sector->floorypanning;
+        data[32] = sector->visibility;
+        data[33] = sector->filler;
+        write_u16_le(data + 34, (uint16_t)sector->lotag);
+        write_u16_le(data + 36, (uint16_t)sector->hitag);
+        write_u16_le(data + 38, (uint16_t)sector->extra);
+        if (fwrite(data, 40, 1, fp) != 1) {
+            goto write_error;
+        }
+    }
+
+    /* Write the wall count and wall records. */
+    write_u16_le(data, map->numwalls);
+    if (fwrite(data, 2, 1, fp) != 1) {
+        goto write_error;
+    }
+    for (i = 0; i < map->numwalls; i++) {
+        const DukeMapWall *wall = map->walls[i];
+
+        write_u32_le(data + 0, (uint32_t)wall->x);
+        write_u32_le(data + 4, (uint32_t)wall->y);
+        write_u16_le(data + 8, (uint16_t)wall->point2);
+        write_u16_le(data + 10, (uint16_t)wall->nextwall);
+        write_u16_le(data + 12, (uint16_t)wall->nextsector);
+        write_u16_le(data + 14, (uint16_t)wall->cstat);
+        write_u16_le(data + 16, (uint16_t)wall->picnum);
+        write_u16_le(data + 18, (uint16_t)wall->overpicnum);
+        data[20] = (uint8_t)wall->shade;
+        data[21] = wall->pal;
+        data[22] = wall->xrepeat;
+        data[23] = wall->yrepeat;
+        data[24] = wall->xpanning;
+        data[25] = wall->ypanning;
+        write_u16_le(data + 26, (uint16_t)wall->lotag);
+        write_u16_le(data + 28, (uint16_t)wall->hitag);
+        write_u16_le(data + 30, (uint16_t)wall->extra);
+        if (fwrite(data, 32, 1, fp) != 1) {
+            goto write_error;
+        }
+    }
+
+    /* Write the sprite count and sprite records. */
+    write_u16_le(data, map->numsprites);
+    if (fwrite(data, 2, 1, fp) != 1) {
+        goto write_error;
+    }
+    for (i = 0; i < map->numsprites; i++) {
+        const DukeMapSprite *sprite = map->sprites[i];
+
+        write_u32_le(data + 0, (uint32_t)sprite->x);
+        write_u32_le(data + 4, (uint32_t)sprite->y);
+        write_u32_le(data + 8, (uint32_t)sprite->z);
+        write_u16_le(data + 12, (uint16_t)sprite->cstat);
+        write_u16_le(data + 14, (uint16_t)sprite->picnum);
+        data[16] = (uint8_t)sprite->shade;
+        data[17] = sprite->pal;
+        data[18] = sprite->clipdist;
+        data[19] = sprite->filler;
+        data[20] = sprite->xrepeat;
+        data[21] = sprite->yrepeat;
+        data[22] = (uint8_t)sprite->xoffset;
+        data[23] = (uint8_t)sprite->yoffset;
+        write_u16_le(data + 24, (uint16_t)sprite->sectnum);
+        write_u16_le(data + 26, (uint16_t)sprite->statnum);
+        write_u16_le(data + 28, (uint16_t)sprite->ang);
+        write_u16_le(data + 30, (uint16_t)sprite->owner);
+        write_u16_le(data + 32, (uint16_t)sprite->xvel);
+        write_u16_le(data + 34, (uint16_t)sprite->yvel);
+        write_u16_le(data + 36, (uint16_t)sprite->zvel);
+        write_u16_le(data + 38, (uint16_t)sprite->lotag);
+        write_u16_le(data + 40, (uint16_t)sprite->hitag);
+        write_u16_le(data + 42, (uint16_t)sprite->extra);
+        if (fwrite(data, 44, 1, fp) != 1) {
+            goto write_error;
+        }
+    }
+
+    if (fclose(fp) != 0) {
+        return map_invalid(map, "Unable to close map file after writing: %s",
+            filename);
+    }
+    return true;
+
+write_error:
+    fclose(fp);
+    return map_invalid(map, "Unable to write map file: %s", filename);
 }
 
 bool duke_map_file_validate(DukeMapFile *map)
