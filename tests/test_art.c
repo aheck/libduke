@@ -54,12 +54,35 @@ START_TEST(test_art_round_trip_and_manipulation)
 }
 END_TEST
 
+START_TEST(test_art_open_memory_copies_buffer)
+{
+    uint8_t contents[] = {
+        1, 0, 0, 0, 1, 0, 0, 0, 7, 0, 0, 0, 7, 0, 0, 0,
+        2, 0, 2, 0, 0, 0, 0, 0, 1, 2, 3, 4
+    };
+    const uint8_t expected_pixels[] = { 1, 2, 3, 4 };
+    void *pixels = NULL;
+    DukeArtFile *art = duke_art_new();
+
+    ck_assert_ptr_nonnull(art);
+    ck_assert(duke_art_open_memory(art, contents, sizeof(contents)));
+    memset(contents, 0, sizeof(contents));
+    ck_assert(duke_art_read_tiles_sparse(art));
+    ck_assert_int_eq(art->header.localtilestart, 7);
+    ck_assert_uint_eq(duke_art_get_tile_data_by_number(art, 7, &pixels), 4);
+    ck_assert_int_eq(memcmp(pixels, expected_pixels, sizeof(expected_pixels)), 0);
+
+    duke_art_free(art);
+}
+END_TEST
+
 static Suite *art_suite(void)
 {
     Suite *suite = suite_create("art");
     TCase *tc = tcase_create("core");
 
     tcase_add_test(tc, test_art_round_trip_and_manipulation);
+    tcase_add_test(tc, test_art_open_memory_copies_buffer);
     suite_add_tcase(suite, tc);
     return suite;
 }

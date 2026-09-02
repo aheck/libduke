@@ -1,10 +1,91 @@
 #include "libduke/art.h"
 
+#include <limits.h>
 #include <stdarg.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include "glist.h"
+
+typedef enum DukeArtInputType {
+    DUKE_ART_INPUT_FILE,
+    DUKE_ART_INPUT_MEMORY
+} DukeArtInputType;
+
+typedef struct DukeArtInput {
+    DukeArtInputType type;
+    FILE *file;
+    uint8_t *data;
+    size_t size;
+    size_t position;
+} DukeArtInput;
+
+static void input_free(DukeArtInput *input)
+{
+    if (input == NULL) {
+        return;
+    }
+    if (input->file != NULL) {
+        fclose(input->file);
+    }
+    free(input->data);
+    free(input);
+}
+
+static size_t input_read(DukeArtInput *input, void *data, size_t size)
+{
+    if (input == NULL || data == NULL) {
+        return 0;
+    }
+    if (input->type == DUKE_ART_INPUT_FILE) {
+        return fread(data, 1, size, input->file);
+    }
+    if (input->position > input->size || size > input->size - input->position) {
+        return 0;
+    }
+    memcpy(data, input->data + input->position, size);
+    input->position += size;
+    return size;
+}
+
+static bool input_seek(DukeArtInput *input, uint64_t position)
+{
+    if (input == NULL) {
+        return false;
+    }
+    if (input->type == DUKE_ART_INPUT_FILE) {
+        return position <= LONG_MAX
+            && fseek(input->file, (long) position, SEEK_SET) == 0;
+    }
+    if (position > input->size) {
+        return false;
+    }
+    input->position = (size_t) position;
+    return true;
+}
+
+static bool input_size(DukeArtInput *input, uint64_t *size)
+{
+    long position;
+    long end;
+
+    if (input == NULL || size == NULL) {
+        return false;
+    }
+    if (input->type == DUKE_ART_INPUT_MEMORY) {
+        *size = input->size;
+        return true;
+    }
+    position = ftell(input->file);
+    if (position < 0 || fseek(input->file, 0, SEEK_END) != 0
+            || (end = ftell(input->file)) < 0
+            || fseek(input->file, position, SEEK_SET) != 0) {
+        return false;
+    }
+    *size = (uint64_t) end;
+    return true;
+}
 
 static void set_error(DukeArtFile *file, const char *format, ...)
 {
@@ -34,21 +115,21 @@ static void clear_tiles(DukeArtFile *file)
     file->tiles = NULL;
 }
 
-static bool read_i16(FILE *fp, int16_t *value)
+static bool read_i16(DukeArtInput *input, int16_t *value)
 {
     uint8_t bytes[2];
-    if (fread(bytes, 1, sizeof(bytes), fp) != sizeof(bytes)) {
+    if (input_read(input, bytes, sizeof(bytes)) != sizeof(bytes)) {
         return false;
     }
     *value = (int16_t) ((uint16_t) bytes[0] | ((uint16_t) bytes[1] << 8));
     return true;
 }
 
-static bool read_i32(FILE *fp, int32_t *value)
+static bool read_i32(DukeArtInput *input, int32_t *value)
 {
     uint8_t bytes[4];
     uint32_t result;
-    if (fread(bytes, 1, sizeof(bytes), fp) != sizeof(bytes)) {
+    if (input_read(input, bytes, sizeof(bytes)) != sizeof(bytes)) {
         return false;
     }
     result = (uint32_t) bytes[0] | ((uint32_t) bytes[1] << 8)
@@ -101,22 +182,67 @@ DukeArtFile* duke_art_new(void)
 
 bool duke_art_open_filename(DukeArtFile *file, const char *filename)
 {
+    DukeArtInput *input;
+
     if (file == NULL || filename == NULL) {
         return false;
     }
     duke_art_close(file);
-    file->fp = fopen(filename, "rb");
-    if (file->fp == NULL) {
-        set_error(file, "failed to open ART file: %s", filename);
+    input = calloc(1, sizeof(*input));
+    if (input == NULL) {
+        set_error(file, "failed to allocate ART input");
         return false;
     }
-    if (!read_i32(file->fp, &file->header.artversion)
-            || !read_i32(file->fp, &file->header.numtiles)
-            || !read_i32(file->fp, &file->header.localtilestart)
-            || !read_i32(file->fp, &file->header.localtileend)) {
+    input->type = DUKE_ART_INPUT_FILE;
+    input->file = fopen(filename, "rb");
+    if (input->file == NULL) {
+        set_error(file, "failed to open ART file: %s", filename);
+        input_free(input);
+        return false;
+    }
+    file->input = input;
+    if (!read_i32(file->input, &file->header.artversion)
+            || !read_i32(file->input, &file->header.numtiles)
+            || !read_i32(file->input, &file->header.localtilestart)
+            || !read_i32(file->input, &file->header.localtileend)) {
         set_error(file, "failed to read ART header");
-        fclose(file->fp);
-        file->fp = NULL;
+        input_free(file->input);
+        file->input = NULL;
+        return false;
+    }
+    return true;
+}
+
+bool duke_art_open_memory(DukeArtFile *file, const void *data, size_t size)
+{
+    DukeArtInput *input;
+
+    if (file == NULL || data == NULL || size < 16) {
+        return false;
+    }
+    duke_art_close(file);
+    input = calloc(1, sizeof(*input));
+    if (input == NULL) {
+        set_error(file, "failed to allocate ART input");
+        return false;
+    }
+    input->data = malloc(size);
+    if (input->data == NULL) {
+        set_error(file, "failed to copy ART data");
+        input_free(input);
+        return false;
+    }
+    input->type = DUKE_ART_INPUT_MEMORY;
+    input->size = size;
+    memcpy(input->data, data, size);
+    file->input = input;
+    if (!read_i32(file->input, &file->header.artversion)
+            || !read_i32(file->input, &file->header.numtiles)
+            || !read_i32(file->input, &file->header.localtilestart)
+            || !read_i32(file->input, &file->header.localtileend)) {
+        set_error(file, "failed to read ART header");
+        input_free(file->input);
+        file->input = NULL;
         return false;
     }
     return true;
@@ -127,9 +253,9 @@ bool duke_art_read_tiles_sparse(DukeArtFile *file)
     uint64_t count64;
     uint64_t metadata_size;
     uint64_t data_size = 0;
-    long archive_size;
+    uint64_t archive_size;
 
-    if (file == NULL || file->fp == NULL) {
+    if (file == NULL || file->input == NULL) {
         return false;
     }
     duke_art_reset_last_error(file);
@@ -142,10 +268,9 @@ bool duke_art_read_tiles_sparse(DukeArtFile *file)
         - file->header.localtilestart) + 1;
     metadata_size = 16 + count64 * 8;
     if (count64 > UINT32_MAX || metadata_size > UINT32_MAX
-            || fseek(file->fp, 0, SEEK_END) != 0
-            || (archive_size = ftell(file->fp)) < 0
-            || metadata_size > (uint64_t) archive_size
-            || fseek(file->fp, 16, SEEK_SET) != 0) {
+            || !input_size(file->input, &archive_size)
+            || metadata_size > archive_size
+            || !input_seek(file->input, 16)) {
         set_error(file, "invalid ART tile range or truncated metadata");
         return false;
     }
@@ -153,7 +278,7 @@ bool duke_art_read_tiles_sparse(DukeArtFile *file)
     clear_tiles(file);
     for (uint32_t i = 0; i < (uint32_t) count64; i++) {
         DukeArtTile *tile = calloc(1, sizeof(*tile));
-        if (tile == NULL || !read_i16(file->fp, &tile->width)) {
+        if (tile == NULL || !read_i16(file->input, &tile->width)) {
             free(tile);
             set_error(file, "failed to read tile widths");
             clear_tiles(file);
@@ -164,7 +289,7 @@ bool duke_art_read_tiles_sparse(DukeArtFile *file)
     }
     for (uint32_t i = 0; i < (uint32_t) count64; i++) {
         DukeArtTile *tile = duke_art_get_tile_by_index(file, i);
-        if (!read_i16(file->fp, &tile->height)) {
+        if (!read_i16(file->input, &tile->height)) {
             set_error(file, "failed to read tile heights");
             clear_tiles(file);
             return false;
@@ -173,7 +298,7 @@ bool duke_art_read_tiles_sparse(DukeArtFile *file)
     for (uint32_t i = 0; i < (uint32_t) count64; i++) {
         DukeArtTile *tile = duke_art_get_tile_by_index(file, i);
         int32_t picanm;
-        if (!read_i32(file->fp, &picanm)) {
+        if (!read_i32(file->input, &picanm)) {
             set_error(file, "failed to read tile attributes");
             clear_tiles(file);
             return false;
@@ -220,9 +345,9 @@ bool duke_art_validate(DukeArtFile *file)
 {
     uint64_t expected_size;
     uint32_t count;
-    long actual_size;
+    uint64_t actual_size;
 
-    if (file == NULL || file->fp == NULL || !duke_art_read_tiles_sparse(file)) {
+    if (file == NULL || file->input == NULL || !duke_art_read_tiles_sparse(file)) {
         return false;
     }
     count = g_list_length(file->tiles);
@@ -234,8 +359,7 @@ bool duke_art_validate(DukeArtFile *file)
         }
         expected_size += size;
     }
-    if (fseek(file->fp, 0, SEEK_END) != 0 || (actual_size = ftell(file->fp)) < 0
-            || expected_size != (uint64_t) actual_size) {
+    if (!input_size(file->input, &actual_size) || expected_size != actual_size) {
         set_error(file, "ART file size does not match its tile metadata");
         return false;
     }
@@ -277,13 +401,14 @@ size_t duke_art_get_tile_data_by_index(DukeArtFile *file, uint32_t index,
         *data = NULL;
         return 0;
     }
-    if (file->fp == NULL || fseek(file->fp,
-            file->data_section_offset + tile->data_offset, SEEK_SET) != 0) {
+    if (file->input == NULL || !input_seek(file->input,
+            file->data_section_offset + tile->data_offset)) {
         set_error(file, "failed to seek to tile %d", tile->tile_number);
         return -1;
     }
     tile->data = malloc(size == 0 ? 1 : size);
-    if (tile->data == NULL || fread(tile->data, 1, size, file->fp) != size) {
+    if (tile->data == NULL
+            || input_read(file->input, tile->data, size) != size) {
         free(tile->data);
         tile->data = NULL;
         set_error(file, "failed to read tile %d", tile->tile_number);
@@ -474,10 +599,8 @@ bool duke_art_close(DukeArtFile *file)
     if (file == NULL) {
         return false;
     }
-    if (file->fp != NULL) {
-        fclose(file->fp);
-        file->fp = NULL;
-    }
+    input_free(file->input);
+    file->input = NULL;
     clear_tiles(file);
     return true;
 }

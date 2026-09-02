@@ -4,7 +4,6 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
-#include <stdio.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -27,9 +26,10 @@ typedef struct DukeArtTile {
 } DukeArtTile;
 
 struct GList;
+struct DukeArtInput;
 
 typedef struct DukeArtFile {
-    FILE *fp;
+    struct DukeArtInput *input;
     uint32_t data_section_offset;
     DukeArtHeader header;
     struct GList *tiles;
@@ -56,6 +56,22 @@ DukeArtFile* duke_art_new(void);
  * `false` otherwise, with details in `file->last_error` when available.
  */
 bool duke_art_open_filename(DukeArtFile *file, const char *filename);
+
+/**
+ * @brief Open an ART file from an in-memory buffer.
+ *
+ * Any file currently associated with @p file is closed first. The buffer is
+ * copied, so the caller may release or reuse it after this function returns.
+ * Tile metadata and pixel data remain lazy and are read by the tile-reading
+ * functions in the same way as for a file opened by filename.
+ *
+ * @param file Destination object created by duke_art_new().
+ * @param data Complete ART file contents.
+ * @param size Size of @p data in bytes.
+ * @return `true` if a private copy was made and its complete header was read;
+ * `false` otherwise, with details in `file->last_error` when available.
+ */
+bool duke_art_open_memory(DukeArtFile *file, const void *data, size_t size);
 
 /**
  * @brief Read tile metadata without loading pixel data.
