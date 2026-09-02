@@ -17,7 +17,9 @@ libduke = both_libraries(
   'src/lib/art.c',
   'src/lib/glist.c',
   'src/lib/grp.c',
+  'src/lib/input.c',
   'src/lib/map.c',
+  'src/lib/palette.c',
   include_directories: inc,
   dependencies: math_dep,
   install: true,
@@ -38,6 +40,7 @@ install_headers(
   'include/libduke/art.h',
   'include/libduke/grp.h',
   'include/libduke/map.h',
+  'include/libduke/palette.h',
   subdir: 'libduke',
 )
 
@@ -86,6 +89,17 @@ test_art = executable(
 )
 
 test('art', test_art)
+
+test_palette = executable(
+  'test-palette',
+  'tests/test_palette.c',
+  dependencies: [
+    libduke_dep,
+    check_dep,
+  ],
+)
+
+test('palette', test_palette)
 
 test_map = executable(
   'test-map',

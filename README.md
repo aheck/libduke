@@ -10,6 +10,7 @@ original game executable.
 - Read GRP archive metadata and entry data, either lazily or eagerly
 - Inspect, extract, create, append to, and update GRP archives
 - Read, validate, create, and modify ART tile sets
+- Read, validate, inspect, and write complete Build palette files
 - Access ART pixel data lazily or load complete tile sets
 - Read and write Build map versions 7, 8, and 9
 - Add and remove map sprites
@@ -157,6 +158,7 @@ Public APIs are declared in:
 - [`include/libduke/grp.h`](include/libduke/grp.h)
 - [`include/libduke/art.h`](include/libduke/art.h)
 - [`include/libduke/map.h`](include/libduke/map.h)
+- [`include/libduke/palette.h`](include/libduke/palette.h)
 
 Objects and returned buffers remain owned by their parent library object unless
 the API documentation says otherwise. Inspect `last_error` after an operation

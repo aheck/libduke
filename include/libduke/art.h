@@ -26,10 +26,10 @@ typedef struct DukeArtTile {
 } DukeArtTile;
 
 struct GList;
-struct DukeArtInput;
+struct DukeInput;
 
 typedef struct DukeArtFile {
-    struct DukeArtInput *input;
+    struct DukeInput *input;
     uint32_t data_section_offset;
     DukeArtHeader header;
     struct GList *tiles;
