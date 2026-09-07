@@ -76,11 +76,66 @@ START_TEST(test_art_open_memory_copies_buffer)
 }
 END_TEST
 
+START_TEST(test_tile_rgba_layout_palette_and_transparency)
+{
+    DukeArtTile tile = { .width = 2, .height = 3 };
+    DukePaletteFile palette = {0};
+    const uint8_t pixels[] = {0, 1, 2, 3, 4, 255};
+    const uint8_t expected[] = {
+        0,0,0,255, 130,0,0,255,
+        255,0,0,255, 0,65,0,255,
+        0,255,0,255, 4,8,12,0
+    };
+    uint8_t rgba[25];
+    palette.colors[1].red = 63;
+    palette.colors[2].green = 63;
+    palette.colors[3].red = 32;
+    palette.colors[4].green = 16;
+    palette.colors[255] = (DukePaletteColor){1,2,3};
+    memset(rgba, 42, sizeof(rgba));
+    ck_assert(duke_art_tile_to_rgba(&tile, pixels, sizeof(pixels), &palette, rgba, sizeof(rgba)));
+    ck_assert_int_eq(memcmp(rgba, expected, sizeof(expected)), 0);
+    ck_assert_int_eq(rgba[24], 42);
+}
+END_TEST
+
+START_TEST(test_tile_rgba_invalid_input)
+{
+    DukeArtTile tile = { .width = 1, .height = 1 };
+    DukePaletteFile palette = {0};
+    uint8_t pixel = 0;
+    uint8_t rgba[] = {42,42,42,42};
+    const uint8_t expected[] = {42,42,42,42};
+    const DukeArtTile *tile_arg = &tile;
+    const DukePaletteFile *palette_arg = &palette;
+    const uint8_t *pixels_arg = &pixel;
+    uint8_t *rgba_arg = rgba;
+    size_t input_size = 1, output_size = 4;
+    switch (_i) {
+    case 0: tile_arg = NULL; break;
+    case 1: palette_arg = NULL; break;
+    case 2: pixels_arg = NULL; break;
+    case 3: rgba_arg = NULL; break;
+    case 4: tile.width = 0; break;
+    case 5: tile.height = -1; break;
+    case 6: input_size = 0; break;
+    case 7: output_size = 3; break;
+    case 8: palette.colors[0].blue = 64; break;
+    case 9: tile.width = 32767; tile.height = 32767; break;
+    }
+    ck_assert(!duke_art_tile_to_rgba(tile_arg, pixels_arg, input_size, palette_arg, rgba_arg, output_size));
+    ck_assert_int_eq(memcmp(rgba, expected, sizeof(expected)), 0);
+}
+END_TEST
+
+
 static Suite *art_suite(void)
 {
     Suite *suite = suite_create("art");
     TCase *tc = tcase_create("core");
 
+    tcase_add_test(tc, test_tile_rgba_layout_palette_and_transparency);
+    tcase_add_loop_test(tc, test_tile_rgba_invalid_input, 0, 10);
     tcase_add_test(tc, test_art_round_trip_and_manipulation);
     tcase_add_test(tc, test_art_open_memory_copies_buffer);
     suite_add_tcase(suite, tc);

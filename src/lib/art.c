@@ -518,3 +518,45 @@ void duke_art_free(DukeArtFile *file)
         free(file);
     }
 }
+
+bool duke_art_tile_to_rgba(const DukeArtTile *tile, const uint8_t *pixels,
+    size_t pixels_size, const DukePaletteFile *palette, uint8_t *rgba,
+    size_t rgba_size)
+{
+    size_t width, height, count, x, y;
+    unsigned i;
+    if (tile == NULL || pixels == NULL || palette == NULL || rgba == NULL
+        || tile->width <= 0 || tile->height <= 0) {
+        return false;
+    }
+    width = (size_t)tile->width;
+    height = (size_t)tile->height;
+    if (width > SIZE_MAX / height) {
+        return false;
+    }
+    count = width * height;
+    if (count > SIZE_MAX / 4 || pixels_size < count || rgba_size < count * 4) {
+        return false;
+    }
+    /* Validate before writing so callers never receive a partial conversion. */
+    for (i = 0; i < DUKE_PALETTE_COLOR_COUNT; i++) {
+        const DukePaletteColor *color = &palette->colors[i];
+        if (color->red > DUKE_PALETTE_MAX_CHANNEL
+            || color->green > DUKE_PALETTE_MAX_CHANNEL
+            || color->blue > DUKE_PALETTE_MAX_CHANNEL) {
+            return false;
+        }
+    }
+    for (y = 0; y < height; y++) {
+        for (x = 0; x < width; x++) {
+            uint8_t index = pixels[x * height + y];
+            const DukePaletteColor *color = &palette->colors[index];
+            uint8_t *out = rgba + (y * width + x) * 4;
+            out[0] = (uint8_t)((color->red << 2) | (color->red >> 4));
+            out[1] = (uint8_t)((color->green << 2) | (color->green >> 4));
+            out[2] = (uint8_t)((color->blue << 2) | (color->blue >> 4));
+            out[3] = index == 255 ? 0 : 255;
+        }
+    }
+    return true;
+}

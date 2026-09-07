@@ -5,6 +5,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "palette.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -24,6 +26,29 @@ typedef struct DukeArtTile {
     uint32_t data_offset;
     uint8_t *data;
 } DukeArtTile;
+
+/**
+ * @brief Convert column-major ART indices to tightly packed row-major RGBA8.
+ *
+ * Expands the palette's 6-bit base RGB channels to 8 bits by bit replication.
+ * Index 255 has alpha 0; all other indices have alpha 255. RGB is retained for
+ * transparent pixels and is not premultiplied. Output bytes are R, G, B, A on
+ * every platform. Shade and translucency tables are not used.
+ *
+ * @param tile Tile supplying positive width and height; tile->data is unused.
+ * @param pixels Column-major indices, with at least width * height bytes.
+ * @param pixels_size Available input bytes.
+ * @param palette Base palette with every RGB channel in the range 0..63.
+ * @param rgba Caller-owned output buffer, disjoint from input and palette.
+ * @param rgba_size Available output bytes, at least width * height * 4.
+ * @return `true` on success; `false` for NULL pointers, invalid dimensions or
+ * palette channels, or insufficient buffers. Failure leaves output unchanged.
+ * No memory is allocated and no last_error field is modified.
+ */
+bool duke_art_tile_to_rgba(const DukeArtTile *tile, const uint8_t *pixels,
+    size_t pixels_size, const DukePaletteFile *palette, uint8_t *rgba,
+    size_t rgba_size);
+
 
 struct GList;
 struct DukeInput;
