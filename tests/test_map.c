@@ -462,11 +462,104 @@ START_TEST(test_success_clears_previous_error)
 }
 END_TEST
 
+START_TEST(test_import_references_accept_effect_sectors)
+{
+    DukeMapFile *map = square_map();
+    /* Two independent two-wall loops need no geometric area. */
+    map->walls[1]->point2 = 0;
+    map->walls[3]->point2 = 2;
+    strcpy(map->last_error, "old error");
+    ck_assert(duke_map_file_validate_references(map));
+    ck_assert_str_eq(map->last_error, "");
+    ck_assert(!duke_map_file_validate_geometry(map));
+    map->sectors = realloc(map->sectors, 2 * sizeof(*map->sectors));
+    ck_assert_ptr_nonnull(map->sectors);
+    map->sectors[1] = duke_map_sector_new();
+    ck_assert_ptr_nonnull(map->sectors[1]);
+    map->numsectors = 2;
+    map->sectors[0]->wallnum = 2;
+    map->sectors[1]->wallptr = 2;
+    map->sectors[1]->wallnum = 2;
+    ck_assert(duke_map_file_validate_references(map));
+    ck_assert(!duke_map_file_validate_sector_wall_ownership(map));
+    /* A one-wall loop is also structurally valid for permissive import. */
+    map->walls[0]->point2 = 0;
+    map->walls[1]->point2 = 1;
+    ck_assert(duke_map_file_validate_references(map));
+    duke_map_file_free(map);
+}
+END_TEST
+
+START_TEST(test_import_references_accept_reordered_sectors)
+{
+    DukeMapFile *map = adjacent_sectors_map();
+    DukeMapSector *first = map->sectors[0];
+    int w;
+    ck_assert(duke_map_file_validate_references(map));
+    map->sectors[0] = map->sectors[1];
+    map->sectors[1] = first;
+    for (w = 0; w < map->numwalls; w++) {
+        if (map->walls[w]->nextsector >= 0) {
+            map->walls[w]->nextsector = 1 - map->walls[w]->nextsector;
+        }
+    }
+    ck_assert(duke_map_file_validate_references(map));
+    ck_assert(!duke_map_file_validate_sector_wall_ownership(map));
+    duke_map_file_free(map);
+}
+END_TEST
+
+START_TEST(test_import_references_reject_corruption)
+{
+    DukeMapFile *map = adjacent_sectors_map();
+    switch (_i) {
+    case 0: map->sectors[0]->wallptr = -1; break;
+    case 1: map->sectors[0]->wallnum = 0; break;
+    case 2: map->sectors[0]->wallnum = 9; break;
+    case 3: map->sectors[1]->wallptr = 3; break;
+    case 4: map->sectors[0]->wallnum = 3; break;
+    case 5: map->walls[0]->point2 = -1; break;
+    case 6: map->walls[0]->point2 = 8; break;
+    case 7: map->walls[0]->point2 = 4; break;
+    case 8: map->walls[0]->point2 = 2; break;
+    case 9: map->walls[1]->nextwall = -1; break;
+    case 10: map->walls[1]->nextwall = 8; break;
+    case 11: map->walls[1]->nextsector = -1; break;
+    case 12: map->walls[1]->nextsector = 2; break;
+    case 13: map->walls[1]->nextsector = 0; break;
+    case 14: map->walls[7]->nextwall = 0; break;
+    case 15: map->walls[7]->x++; break;
+    case 16: map->walls[7]->point2 = 8; break;
+    }
+    ck_assert(!duke_map_file_validate_references(map));
+    ck_assert(strlen(map->last_error) > 0);
+    duke_map_file_free(map);
+}
+END_TEST
+
+START_TEST(test_import_references_structure)
+{
+    DukeMapFile *map = duke_map_file_new();
+    ck_assert_ptr_nonnull(map);
+    map->mapversion = 7;
+    ck_assert(!duke_map_file_validate_references(NULL));
+    ck_assert(duke_map_file_validate_references(map));
+    map->numwalls = 1;
+    ck_assert(!duke_map_file_validate_references(map));
+    map->numwalls = 0;
+    duke_map_file_free(map);
+}
+END_TEST
+
 static Suite *map_suite(void)
 {
     Suite *suite = suite_create("map");
     TCase *tc = tcase_create("validation");
 
+    tcase_add_test(tc, test_import_references_accept_effect_sectors);
+    tcase_add_test(tc, test_import_references_accept_reordered_sectors);
+    tcase_add_test(tc, test_import_references_structure);
+    tcase_add_loop_test(tc, test_import_references_reject_corruption, 0, 17);
     tcase_add_test(tc, test_valid_map);
     tcase_add_test(tc, test_map_write_and_read_round_trip);
     tcase_add_test(tc, test_add_sprite_appends_owned_sprite);

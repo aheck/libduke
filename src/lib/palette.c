@@ -26,10 +26,12 @@ static bool read_palette(DukePaletteFile *palette, DukeInput *input)
     uint8_t shade_count[2];
     uint8_t *shade_tables = NULL;
     uint8_t *translucency_table = NULL;
+    uint8_t *trailing_data = NULL;
     uint16_t num_shades;
     size_t shade_size;
     uint64_t input_length;
     uint64_t expected_length;
+    size_t trailing_size;
 
     if (!duke_input_size(input, &input_length)
             || !duke_input_seek(input, 0)
@@ -45,10 +47,11 @@ static bool read_palette(DukePaletteFile *palette, DukeInput *input)
     shade_size = (size_t) num_shades * DUKE_PALETTE_COLOR_COUNT;
     expected_length = sizeof(color_data) + sizeof(shade_count) + shade_size
         + DUKE_PALETTE_TRANSLUCENCY_SIZE;
-    if (input_length != expected_length) {
-        set_error(palette, "palette file size does not match its shade count");
+    if (input_length < expected_length || input_length - expected_length > SIZE_MAX) {
+        set_error(palette, "palette file is truncated for its shade count");
         return false;
     }
+    trailing_size = (size_t) (input_length - expected_length);
     for (size_t index = 0; index < DUKE_PALETTE_COLOR_COUNT; ++index) {
         colors[index].red = color_data[index * 3];
         colors[index].green = color_data[index * 3 + 1];
@@ -81,13 +84,28 @@ static bool read_palette(DukePaletteFile *palette, DukeInput *input)
         free(translucency_table);
         return false;
     }
+    if (trailing_size > 0) {
+        trailing_data = malloc(trailing_size);
+        if (trailing_data == NULL
+                || duke_input_read(input, trailing_data, trailing_size)
+                    != trailing_size) {
+            set_error(palette, "failed to read trailing palette data");
+            free(shade_tables);
+            free(translucency_table);
+            free(trailing_data);
+            return false;
+        }
+    }
 
     free(palette->shade_tables);
     free(palette->translucency_table);
+    free(palette->trailing_data);
     memcpy(palette->colors, colors, sizeof(colors));
     palette->num_shades = num_shades;
     palette->shade_tables = shade_tables;
     palette->translucency_table = translucency_table;
+    palette->trailing_data = trailing_data;
+    palette->trailing_size = trailing_size;
     duke_palette_reset_last_error(palette);
     return true;
 }
@@ -103,6 +121,10 @@ DukePaletteFile* duke_palette_new(void)
     if (palette->translucency_table == NULL) {
         free(palette);
         return NULL;
+    }
+    if (palette->trailing_size > 0 && palette->trailing_data == NULL) {
+        set_error(palette, "trailing palette data is missing");
+        return false;
     }
     return palette;
 }
@@ -205,7 +227,10 @@ bool duke_palette_write_to_filename(DukePaletteFile *palette,
                     == shade_size)
             && fwrite(palette->translucency_table, 1,
                 DUKE_PALETTE_TRANSLUCENCY_SIZE, output)
-                == DUKE_PALETTE_TRANSLUCENCY_SIZE) {
+                == DUKE_PALETTE_TRANSLUCENCY_SIZE
+            && (palette->trailing_size == 0
+                || fwrite(palette->trailing_data, 1, palette->trailing_size,
+                    output) == palette->trailing_size)) {
         result = true;
     }
     if (fclose(output) != 0) {
@@ -254,5 +279,6 @@ void duke_palette_free(DukePaletteFile *palette)
     }
     free(palette->shade_tables);
     free(palette->translucency_table);
+    free(palette->trailing_data);
     free(palette);
 }

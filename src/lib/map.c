@@ -650,6 +650,86 @@ bool duke_map_file_validate_structure(DukeMapFile *map)
     return true;
 }
 
+bool duke_map_file_validate_references(DukeMapFile *map)
+{
+    int *owners;
+    unsigned char *incoming;
+    int s, w;
+    bool valid = false;
+
+    if (!duke_map_file_validate_structure(map)) {
+        return false;
+    }
+    if (map->numwalls == 0 && map->numsectors == 0) {
+        return true;
+    }
+    owners = malloc(((size_t)map->numwalls + 1) * sizeof(*owners));
+    incoming = calloc((size_t)map->numwalls + 1, sizeof(*incoming));
+    if (owners == NULL || incoming == NULL) {
+        map_invalid(map, "Unable to allocate reference validation data");
+        goto cleanup;
+    }
+    for (w = 0; w < map->numwalls; w++) {
+        owners[w] = -1;
+    }
+
+    /* Ranges may occur in any order. Effect sectors may have fewer than
+     * three walls, but every wall must still have exactly one owner. */
+    for (s = 0; s < map->numsectors; s++) {
+        const DukeMapSector *sector = map->sectors[s];
+        if (sector->wallptr < 0 || sector->wallnum < 1
+            || sector->wallptr + sector->wallnum > map->numwalls) {
+            map_invalid(map, "Sector %d has an invalid wall range", s);
+            goto cleanup;
+        }
+        for (w = sector->wallptr; w < sector->wallptr + sector->wallnum; w++) {
+            if (owners[w] != -1) {
+                map_invalid(map, "Sector wall ranges overlap at wall %d", w);
+                goto cleanup;
+            }
+            owners[w] = s;
+        }
+    }
+
+    /* A sector-local permutation of point2 links forms closed loops.
+     * Validate portal endpoints only after bounding every dereferenced index. */
+    for (w = 0; w < map->numwalls; w++) {
+        const DukeMapWall *wall = map->walls[w];
+        const DukeMapWall *other;
+        if (owners[w] < 0 || wall->point2 < 0 || wall->point2 >= map->numwalls
+            || owners[wall->point2] != owners[w] || incoming[wall->point2]++) {
+            map_invalid(map, "Wall %d has an invalid owner or next-point link", w);
+            goto cleanup;
+        }
+        if (wall->nextwall == -1 && wall->nextsector == -1) {
+            continue;
+        }
+        if (wall->nextwall < 0 || wall->nextwall >= map->numwalls
+            || wall->nextsector < 0 || wall->nextsector >= map->numsectors
+            || owners[wall->nextwall] != wall->nextsector) {
+            map_invalid(map, "Wall %d has an invalid portal reference", w);
+            goto cleanup;
+        }
+        other = map->walls[wall->nextwall];
+        if (other->nextwall != w || other->nextsector != owners[w]
+            || other->point2 < 0 || other->point2 >= map->numwalls
+            || wall->x != map->walls[other->point2]->x
+            || wall->y != map->walls[other->point2]->y
+            || other->x != map->walls[wall->point2]->x
+            || other->y != map->walls[wall->point2]->y) {
+            map_invalid(map, "Portal at wall %d has mismatched sides", w);
+            goto cleanup;
+        }
+    }
+    valid = true;
+
+cleanup:
+    free(owners);
+    free(incoming);
+    return valid;
+}
+
+
 static int map_wall_sector(const DukeMapFile *map, uint16_t wallnum)
 {
     uint16_t i;

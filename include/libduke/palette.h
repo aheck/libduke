@@ -24,6 +24,8 @@ typedef struct DukePaletteFile {
     uint16_t num_shades;
     uint8_t *shade_tables;
     uint8_t *translucency_table;
+    uint8_t *trailing_data;
+    size_t trailing_size;
     char last_error[256];
 } DukePaletteFile;
 
@@ -42,9 +44,10 @@ DukePaletteFile* duke_palette_new(void);
  * @brief Read a complete Build PALETTE.DAT file from disk.
  *
  * The file must contain the 768-byte VGA palette, little-endian shade count,
- * every 256-byte shade lookup table, and the 65,536-byte translucency table,
- * with no trailing data. On failure, the existing palette contents remain
- * unchanged.
+ * every 256-byte shade lookup table, and the 65,536-byte translucency table.
+ * Compatibility data following the standard payload, including the 8,192
+ * trailing bytes in the original Duke 3D file, is preserved. On failure, the
+ * existing palette contents remain unchanged.
  *
  * @param palette Destination palette created by duke_palette_new().
  * @param filename Path to PALETTE.DAT.

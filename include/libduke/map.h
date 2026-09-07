@@ -49,13 +49,13 @@ typedef struct DukeMapSector {
     int16_t ceilingstat; // Flags:
     int16_t floorstat;   //
                          //        bit 0: 1 = parallaxing, 0 = not
-                         // bit 1: 1 = sloped, 0 = not
-                         // bit 2: 1 = swap x&y, 0 = not
-                         // bit 3: 1 = double smooshiness
-                         // bit 4: 1 = x-flip
-                         // bit 5: 1 = y-flip
-                         // bit 6: 1 = Align texture to first wall of sector
-                         // bits 7-15: reserved
+                         //        bit 1: 1 = sloped, 0 = not
+                         //        bit 2: 1 = swap x&y, 0 = not
+                         //        bit 3: 1 = double smooshiness
+                         //        bit 4: 1 = x-flip
+                         //        bit 5: 1 = y-flip
+                         //        bit 6: 1 = Align texture to first wall of sector
+                         //        bits 7-15: reserved
 
     int16_t ceilingpicnum; // Ceiling texture
     int16_t ceilingheinum; // Ceiling slope (0 = no slope, 4096 = 45 degrees)
@@ -86,16 +86,16 @@ typedef struct DukeMapWall {
 
     int16_t cstat; // Flags:
                    //        bit 0: 1 = Blocking wall (use with clipmove, getzrange)
-                   // bit 1: 1 = bottoms of invisible walls swapped, 0 = not
-                   // bit 2: 1 = align picture on bottom (for doors), 0 = top
-                   // bit 3: 1 = x-flipped, 0 = normal
-                   // bit 4: 1 = masking wall, 0 = not
-                   // bit 5: 1 = 1-way wall, 0 = not
-                   // bit 6: 1 = Blocking wall (use with hitscan / cliptype 1)
-                   // bit 7: 1 = Transluscence, 0 = not
-                   // bit 8: 1 = y-flipped, 0 = normal
-                   // bit 9: 1 = Transluscence reversing, 0 = normal
-                   // bits 10-15: reserved
+                   //        bit 1: 1 = bottoms of invisible walls swapped, 0 = not
+                   //        bit 2: 1 = align picture on bottom (for doors), 0 = top
+                   //        bit 3: 1 = x-flipped, 0 = normal
+                   //        bit 4: 1 = masking wall, 0 = not
+                   //        bit 5: 1 = 1-way wall, 0 = not
+                   //        bit 6: 1 = Blocking wall (use with hitscan / cliptype 1)
+                   //        bit 7: 1 = Transluscence, 0 = not
+                   //        bit 8: 1 = y-flipped, 0 = normal
+                   //        bit 9: 1 = Transluscence reversing, 0 = normal
+                   //        bits 10-15: reserved
 
     int16_t picnum; // Wall texture
     int16_t overpicnum; // Texture for masked/one-way walls
@@ -240,6 +240,23 @@ bool duke_map_file_validate(DukeMapFile *map);
  * On failure, `map->last_error` describes the first violation when possible.
  */
 bool duke_map_file_validate_structure(DukeMapFile *map);
+
+/**
+ * @brief Validate wall ownership, sector-local loops, and portal references.
+ *
+ * Performs structural validation first. Unlike the strict geometry validators,
+ * accepts sector wall ranges in any order and loops with one or two walls,
+ * allowing import of effect sectors. Does not check winding, intersections,
+ * vertical clearance, sprite placement, or player-start placement. An empty
+ * map is valid; applications may impose their own nonempty-map requirement.
+ *
+ * @param map Map to validate. May be NULL.
+ * @return `true` when references are consistent; `false` otherwise. On failure,
+ * map->last_error describes the violation when map is non-NULL. On success,
+ * any previous error is cleared.
+ */
+bool duke_map_file_validate_references(DukeMapFile *map);
+
 
 /**
  * @brief Validate that sectors own contiguous, disjoint wall-array slices.

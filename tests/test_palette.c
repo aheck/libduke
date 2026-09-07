@@ -58,6 +58,29 @@ START_TEST(test_palette_reads_memory_and_lookups)
 }
 END_TEST
 
+START_TEST(test_palette_preserves_duke_compatibility_data)
+{
+    const size_t trailing_size = 8192;
+    uint8_t *contents = make_palette_data();
+    uint8_t *extended = realloc(contents, TEST_PALETTE_SIZE + trailing_size);
+    DukePaletteFile *palette = duke_palette_new();
+
+    ck_assert_ptr_nonnull(extended);
+    ck_assert_ptr_nonnull(palette);
+    for (size_t index = 0; index < trailing_size; ++index) {
+        extended[TEST_PALETTE_SIZE + index] = (uint8_t) index;
+    }
+    ck_assert(duke_palette_read_from_memory(palette, extended,
+        TEST_PALETTE_SIZE + trailing_size));
+    ck_assert_uint_eq(palette->trailing_size, trailing_size);
+    ck_assert_int_eq(memcmp(palette->trailing_data + trailing_size - 256,
+        extended + TEST_PALETTE_SIZE + trailing_size - 256, 256), 0);
+
+    duke_palette_free(palette);
+    free(extended);
+}
+END_TEST
+
 START_TEST(test_palette_file_round_trip)
 {
     uint8_t *contents = make_palette_data();
@@ -115,6 +138,7 @@ static Suite *palette_suite(void)
 
     tcase_add_test(tc, test_palette_reads_memory_and_lookups);
     tcase_add_test(tc, test_palette_file_round_trip);
+    tcase_add_test(tc, test_palette_preserves_duke_compatibility_data);
     tcase_add_test(tc,
         test_palette_rejects_invalid_data_without_replacing_contents);
     suite_add_tcase(suite, tc);
