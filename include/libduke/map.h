@@ -258,6 +258,32 @@ bool duke_map_file_validate_structure(DukeMapFile *map);
 bool duke_map_file_validate_references(DukeMapFile *map);
 
 
+/** @brief Planar position relative to a sector, including its hole loops. */
+typedef enum DukeMapPointLocation {
+    DUKE_MAP_POINT_INVALID = -1,
+    DUKE_MAP_POINT_OUTSIDE = 0,
+    DUKE_MAP_POINT_INSIDE = 1,
+    DUKE_MAP_POINT_BOUNDARY = 2
+} DukeMapPointLocation;
+
+/**
+ * @brief Classify a map-coordinate point against all loops of a sector.
+ *
+ * Uses odd-even containment, so points in holes are outside. Points on edges
+ * or vertices are boundary points. Ignores Z and does not choose among
+ * overlapping sectors. The map should have valid references (see
+ * duke_map_file_validate_references); malformed local arrays or links return
+ * DUKE_MAP_POINT_INVALID. Does not modify the map or its last_error.
+ *
+ * @param map Map to query. May be NULL, which returns DUKE_MAP_POINT_INVALID.
+ * @param sectnum Sector index.
+ * @param x Point X coordinate in Build units.
+ * @param y Point Y coordinate in Build units.
+ * @return Inside, outside, boundary, or invalid for an invalid sector/query.
+ */
+DukeMapPointLocation duke_map_sector_classify_point(const DukeMapFile *map,
+    int sectnum, int32_t x, int32_t y);
+
 /**
  * @brief Validate that sectors own contiguous, disjoint wall-array slices.
  *

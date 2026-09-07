@@ -551,6 +551,70 @@ START_TEST(test_import_references_structure)
 }
 END_TEST
 
+START_TEST(test_classify_point_edges_and_invalid_queries)
+{
+    DukeMapFile *map = square_map();
+    ck_assert_int_eq(duke_map_sector_classify_point(map, 0, 512, 512), DUKE_MAP_POINT_INSIDE);
+    ck_assert_int_eq(duke_map_sector_classify_point(map, 0, -1, 512), DUKE_MAP_POINT_OUTSIDE);
+    ck_assert_int_eq(duke_map_sector_classify_point(map, 0, 1025, 512), DUKE_MAP_POINT_OUTSIDE);
+    ck_assert_int_eq(duke_map_sector_classify_point(map, 0, 0, 512), DUKE_MAP_POINT_BOUNDARY);
+    ck_assert_int_eq(duke_map_sector_classify_point(map, 0, 1024, 512), DUKE_MAP_POINT_BOUNDARY);
+    ck_assert_int_eq(duke_map_sector_classify_point(map, 0, 512, 0), DUKE_MAP_POINT_BOUNDARY);
+    ck_assert_int_eq(duke_map_sector_classify_point(map, 0, 512, 1024), DUKE_MAP_POINT_BOUNDARY);
+    ck_assert_int_eq(duke_map_sector_classify_point(map, 0, 0, 0), DUKE_MAP_POINT_BOUNDARY);
+    ck_assert_int_eq(duke_map_sector_classify_point(NULL, 0, 0, 0), DUKE_MAP_POINT_INVALID);
+    ck_assert_int_eq(duke_map_sector_classify_point(map, -1, 0, 0), DUKE_MAP_POINT_INVALID);
+    ck_assert_int_eq(duke_map_sector_classify_point(map, 1, 0, 0), DUKE_MAP_POINT_INVALID);
+    map->walls[3]->point2 = 4;
+    ck_assert_int_eq(duke_map_sector_classify_point(map, 0, 0, 0), DUKE_MAP_POINT_INVALID);
+    duke_map_file_free(map);
+}
+END_TEST
+
+START_TEST(test_classify_point_hole)
+{
+    DukeMapFile *map = adjacent_sectors_map();
+    const int32_t inner[4][2] = {{25,25}, {25,75}, {75,75}, {75,25}};
+    int i;
+    duke_map_sector_free(map->sectors[1]);
+    map->numsectors = 1;
+    map->sectors[0]->wallnum = 8;
+    for (i = 0; i < 8; i++) {
+        map->walls[i]->nextwall = -1;
+        map->walls[i]->nextsector = -1;
+        if (i >= 4) {
+            map->walls[i]->x = inner[i - 4][0];
+            map->walls[i]->y = inner[i - 4][1];
+        }
+    }
+    ck_assert(duke_map_file_validate_references(map));
+    ck_assert_int_eq(duke_map_sector_classify_point(map, 0, 10, 50), DUKE_MAP_POINT_INSIDE);
+    ck_assert_int_eq(duke_map_sector_classify_point(map, 0, 50, 50), DUKE_MAP_POINT_OUTSIDE);
+    ck_assert_int_eq(duke_map_sector_classify_point(map, 0, 25, 50), DUKE_MAP_POINT_BOUNDARY);
+    ck_assert_int_eq(duke_map_sector_classify_point(map, 0, 25, 25), DUKE_MAP_POINT_BOUNDARY);
+    duke_map_file_free(map);
+}
+END_TEST
+
+START_TEST(test_classify_point_diagonal_and_extreme_coordinates)
+{
+    DukeMapFile *map = square_map();
+    map->walls[0]->x = INT32_MIN;
+    map->walls[0]->y = 0;
+    map->walls[1]->x = 0;
+    map->walls[1]->y = INT32_MIN;
+    map->walls[2]->x = INT32_MAX;
+    map->walls[2]->y = 0;
+    map->walls[3]->x = 0;
+    map->walls[3]->y = INT32_MAX;
+    ck_assert_int_eq(duke_map_sector_classify_point(map, 0, 0, 0), DUKE_MAP_POINT_INSIDE);
+    ck_assert_int_eq(duke_map_sector_classify_point(map, 0, INT32_MAX, INT32_MAX), DUKE_MAP_POINT_OUTSIDE);
+    ck_assert_int_eq(duke_map_sector_classify_point(map, 0, -1073741824, -1073741824), DUKE_MAP_POINT_BOUNDARY);
+    duke_map_file_free(map);
+}
+END_TEST
+
+
 static Suite *map_suite(void)
 {
     Suite *suite = suite_create("map");
@@ -560,6 +624,9 @@ static Suite *map_suite(void)
     tcase_add_test(tc, test_import_references_accept_reordered_sectors);
     tcase_add_test(tc, test_import_references_structure);
     tcase_add_loop_test(tc, test_import_references_reject_corruption, 0, 17);
+    tcase_add_test(tc, test_classify_point_edges_and_invalid_queries);
+    tcase_add_test(tc, test_classify_point_hole);
+    tcase_add_test(tc, test_classify_point_diagonal_and_extreme_coordinates);
     tcase_add_test(tc, test_valid_map);
     tcase_add_test(tc, test_map_write_and_read_round_trip);
     tcase_add_test(tc, test_add_sprite_appends_owned_sprite);

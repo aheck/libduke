@@ -880,11 +880,29 @@ static bool segments_intersect(const DukeMapWall *a, const DukeMapWall *b,
         || (o4 == 0.0L && on_segment(c, d, b));
 }
 
-static bool point_in_sector(const DukeMapFile *map, uint16_t sectnum,
-    int32_t x, int32_t y, bool include_boundary)
+DukeMapPointLocation duke_map_sector_classify_point(const DukeMapFile *map,
+    int sectnum, int32_t x, int32_t y)
 {
-    const DukeMapSector *sector = map->sectors[sectnum];
-    int32_t first = sector->wallptr, end = first + sector->wallnum, w;
+    const DukeMapSector *sector;
+    int32_t first, end, w;
+    if (map == NULL || sectnum < 0 || sectnum >= map->numsectors
+        || map->sectors == NULL || map->sectors[sectnum] == NULL
+        || map->walls == NULL) {
+        return DUKE_MAP_POINT_INVALID;
+    }
+    sector = map->sectors[sectnum];
+    first = sector->wallptr;
+    end = first + sector->wallnum;
+    if (first < 0 || sector->wallnum < 1 || end > map->numwalls) {
+        return DUKE_MAP_POINT_INVALID;
+    }
+    /* Check every local link before an early boundary result can be returned. */
+    for (w = first; w < end; w++) {
+        if (map->walls[w] == NULL || map->walls[w]->point2 < first
+            || map->walls[w]->point2 >= end) {
+            return DUKE_MAP_POINT_INVALID;
+        }
+    }
     bool inside = false;
     DukeMapWall point = { .x = x, .y = y };
 
@@ -894,7 +912,7 @@ static bool point_in_sector(const DukeMapFile *map, uint16_t sectnum,
         const DukeMapWall *a = map->walls[w];
         const DukeMapWall *b = map->walls[a->point2];
         if (on_segment(a, b, &point)) {
-            return include_boundary;
+            return DUKE_MAP_POINT_BOUNDARY;
         }
         if ((a->y > y) != (b->y > y)) {
             long double at_x = a->x + ((long double)y - a->y)
@@ -904,7 +922,7 @@ static bool point_in_sector(const DukeMapFile *map, uint16_t sectnum,
             }
         }
     }
-    return inside;
+    return inside ? DUKE_MAP_POINT_INSIDE : DUKE_MAP_POINT_OUTSIDE;
 }
 
 bool duke_map_file_validate_geometry(DukeMapFile *map)
@@ -1091,8 +1109,8 @@ bool duke_map_file_validate_sprites(DukeMapFile *map)
 
         /* Points on a wall are accepted; Build may subsequently move the
          * sprite into either adjoining sector. */
-        if (!point_in_sector(map, (uint16_t)sprite->sectnum,
-                sprite->x, sprite->y, true)) {
+        if (duke_map_sector_classify_point(map, sprite->sectnum,
+                sprite->x, sprite->y) <= DUKE_MAP_POINT_OUTSIDE) {
             return map_invalid(map, "Sprite %u is outside sector %d", i,
                 sprite->sectnum);
         }
@@ -1122,8 +1140,8 @@ bool duke_map_file_validate_start_position(DukeMapFile *map)
         return map_invalid(map, "Invalid starting sector: %d", map->cursectnum);
     }
 
-    if (!point_in_sector(map, (uint16_t)map->cursectnum,
-            map->posx, map->posy, true)) {
+    if (duke_map_sector_classify_point(map, map->cursectnum,
+            map->posx, map->posy) <= DUKE_MAP_POINT_OUTSIDE) {
         return map_invalid(map, "Starting position is outside sector %d",
             map->cursectnum);
     }
