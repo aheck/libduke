@@ -111,3 +111,54 @@ test_map = executable(
 )
 
 test('map', test_map)
+
+# Sokol is vendored at a fixed revision; disabled builds have no GPU dependencies.
+if not get_option('renderer').disabled()
+  sokol_inc = include_directories('third_party/sokol')
+  renderer_deps = [libduke_static_dep, math_dep]
+  backend_args = ['-DSOKOL_GLCORE']
+  if host_machine.system() == 'linux'
+    renderer_deps += dependency('gl')
+    renderer_deps += dependency('threads')
+    renderer_deps += cc.find_library('dl')
+  elif host_machine.system() == 'windows'
+    renderer_deps += cc.find_library('opengl32')
+  elif host_machine.system() == 'darwin'
+    renderer_deps += dependency('appleframeworks', modules: ['OpenGL'])
+  else
+    error('The initial renderer supports desktop OpenGL on Linux, Windows and macOS')
+  endif
+  renderer_lib = library('duke-render', ['src/lib/renderer.c', 'src/lib/sokol.c'],
+    include_directories: [inc, sokol_inc], dependencies: renderer_deps,
+    c_args: backend_args, install: true)
+  renderer_dep = declare_dependency(link_with: renderer_lib,
+    include_directories: [inc, sokol_inc], dependencies: renderer_deps)
+  install_headers('include/libduke/renderer.h', 'third_party/sokol/sokol_gfx.h', subdir: 'libduke')
+  if not get_option('viewer').disabled()
+    viewer_deps = [renderer_dep]
+    viewer_args = backend_args
+    if host_machine.system() == 'linux'
+      foreach name : ['x11', 'xi', 'xcursor']
+        viewer_deps += dependency(name)
+      endforeach
+    elif host_machine.system() == 'windows'
+      foreach name : ['user32', 'gdi32', 'shell32']
+        viewer_deps += cc.find_library(name)
+      endforeach
+    elif host_machine.system() == 'darwin'
+      viewer_args += ['-x', 'objective-c']
+      viewer_deps += dependency('appleframeworks', modules: ['Cocoa', 'QuartzCore'])
+    endif
+    executable('duke-view', 'src/tools/duke-view.c', c_args: viewer_args,
+      include_directories: [inc, sokol_inc], dependencies: viewer_deps, install: true)
+  endif
+elif get_option('viewer').enabled()
+  error('Enable the renderer with -Drenderer=enabled when enabling the viewer')
+endif
+
+if not get_option('renderer').disabled()
+  renderer_test = executable('test-renderer', ['tests/test_renderer.c', 'src/lib/sokol.c'],
+    include_directories: [inc, sokol_inc], dependencies: [libduke_static_dep, math_dep],
+    c_args: ['-DSOKOL_DUMMY_BACKEND', '-UNDEBUG'])
+  test('renderer', renderer_test)
+endif

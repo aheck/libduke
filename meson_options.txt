@@ -1,0 +1,2 @@
+option('renderer', type: 'feature', value: 'disabled', description: 'Build the optional OpenGL Sokol renderer')
+option('viewer', type: 'feature', value: 'disabled', description: 'Build the sokol_app map viewer (requires renderer)')
