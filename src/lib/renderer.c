@@ -8,6 +8,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* Geometry is built once at creation; drawing only binds cached textures and
+ * submits ranges from a single immutable vertex buffer. */
 #define TILE_COUNT 6144
 #define VERTEX_LIMIT 8000000
 
@@ -27,6 +29,7 @@ struct DukeRenderer {
     sg_pipeline pipeline;
     sg_sampler sampler;
     sg_buffer buffer;
+    /* The extra slot holds the checkerboard used for missing/invalid tiles. */
     Texture textures[TILE_COUNT + 1];
     Vertex *vertices;
     size_t count, capacity;
@@ -54,6 +57,8 @@ static void source_free(Source *s) {
     free(s->art);
     duke_palette_free(s->palette);
 }
+/* Keep ART sources alive while geometry requests tiles lazily. On failure,
+ * the caller releases any partially loaded source with source_free(). */
 static bool source_load(Source *s, DukeGrpFile *grp) {
     s->palette = duke_palette_new();
     if (!s->palette) {
@@ -117,6 +122,8 @@ static bool upload(Texture *t, int width, int height, const void *rgba) {
     return sg_query_view_state(t->view) == SG_RESOURCESTATE_VALID;
 }
 
+/* Return a cached/uploaded tile slot, TILE_COUNT for a missing tile, or -1
+ * for a read/allocation/upload failure that must abort renderer creation. */
 static int texture(DukeRenderer *r, Source *s, int tile) {
     if (tile < 0 || tile >= TILE_COUNT) {
         return TILE_COUNT;
@@ -127,6 +134,7 @@ static int texture(DukeRenderer *r, Source *s, int tile) {
         return tile;
     }
 
+    /* Later ART entries take precedence when tile ranges overlap. */
     for (size_t i = s->count; i > 0; i--) {
         DukeArtTile *a = duke_art_get_tile_by_number(s->art[i - 1], tile);
         if (!a || a->width <= 0 || a->height <= 0) {
@@ -155,6 +163,9 @@ static int texture(DukeRenderer *r, Source *s, int tile) {
 
     return TILE_COUNT;
 }
+
+/* Append one quad as two triangles and retain its texture binding separately
+ * from the vertex data. Draw offsets are vertex indices, not byte offsets. */
 static bool emit(DukeRenderer *r, const Vertex v[6], int tile) {
     if (r->count + 6 > VERTEX_LIMIT) {
         return false;
@@ -189,6 +200,9 @@ static double surface(const DukeMapFile *m, int sector, bool floor, double x,
         double y) {
     const DukeMapSector *s = m->sectors[sector];
     double z = floor ? s->floorz : s->ceilingz;
+    /* Slope bit 2 makes heinum a gradient perpendicular to the sector's
+     * first wall. Dividing the cross product by length gives signed distance;
+     * 256 converts the stored slope to Build Z units. */
     if ((floor ? s->floorstat : s->ceilingstat) & 2) {
         const DukeMapWall *a = m->walls[s->wallptr], *b = m->walls[a->point2];
         double dx = (double)b->x - a->x, dy = (double)b->y - a->y;
@@ -204,6 +218,9 @@ static double surface(const DukeMapFile *m, int sector, bool floor, double x,
 
 static Vertex vertex(double x, double y, double z, double u, double v,
         int shade) {
+    /* Build Z points down and uses 16 times as many units as X/Y. Map it
+     * to renderer Y-up, with 1024 horizontal map units per world unit.
+     * Shade is approximated as brightness rather than a palette lookup. */
     float light = fmaxf(0.15f, fminf(1.0f, 1.0f - shade / 32.0f));
     return (Vertex){{x / 1024.0, -z / 16384.0, y / 1024.0}, {u, v}, light};
 }
@@ -243,6 +260,8 @@ static bool floors(DukeRenderer *r, Source *src, const DukeMapFile *m, int id) {
         ys[i] = m->walls[s->wallptr + i]->y;
     }
 
+    /* Split at every vertex height so no boundary edge starts or ends
+     * inside a band. Repeated heights produce empty bands and are skipped. */
     qsort(ys, s->wallnum, sizeof(*ys), compare_double);
     bool ok = true;
     for (int band = 0; band + 1 < s->wallnum && ok; band++) {
@@ -251,6 +270,8 @@ static bool floors(DukeRenderer *r, Source *src, const DukeMapFile *m, int id) {
             continue;
         }
 
+        /* Sampling strictly inside the band avoids vertex ties and excludes
+         * horizontal edges, keeping edge_x() denominators nonzero. */
         int n = 0;
         for (int i = s->wallptr; i < s->wallptr + s->wallnum; i++) {
             const DukeMapWall *a = m->walls[i], *b = m->walls[a->point2];
@@ -260,11 +281,14 @@ static bool floors(DukeRenderer *r, Source *src, const DukeMapFile *m, int id) {
         }
 
         qsort(edges, n, sizeof(*edges), compare_crossing);
+        /* A closed outline must enter and leave the filled region in pairs. */
         if (n % 2) {
             ok = false;
             break;
         }
 
+        /* Each filled interval becomes a trapezoid bounded by the same two
+         * edges at both band limits. Evaluate slopes at all four corners. */
         for (int k = 0; k < n && ok; k += 2) {
             double x[4] = {
                 edge_x(m, edges[k].wall, lo), edge_x(m, edges[k + 1].wall, lo),
@@ -278,6 +302,8 @@ static bool floors(DukeRenderer *r, Source *src, const DukeMapFile *m, int id) {
                 }
                 const Texture *t = &r->textures[tile];
                 int flags = floor ? s->floorstat : s->ceilingstat;
+                /* Bit 8 doubles texture density; bits 4, 16 and 32 swap
+                 * axes and flip U/V. Panning is a fraction of a full repeat. */
                 double scale = (flags & 8) ? 8.0 : 16.0;
                 Vertex quad[4], triangles[6];
                 for (int j = 0; j < 4; j++) {
@@ -313,8 +339,11 @@ static bool floors(DukeRenderer *r, Source *src, const DukeMapFile *m, int id) {
 
     return ok;
 }
+
 static bool wall_quad(DukeRenderer *r, Source *src, const DukeMapFile *m, int w,
         double top[2], double bottom[2], int pic) {
+    /* Build heights increase downward. Empty spans need no geometry; if
+     * only one end is closed, collapse that end rather than invert it. */
     if (bottom[0] <= top[0] && bottom[1] <= top[1]) {
         return true;
     }
@@ -330,6 +359,8 @@ static bool wall_quad(DukeRenderer *r, Source *src, const DukeMapFile *m, int w,
     for (int j = 0; j < 4; j++) {
         int end = (j == 1 || j == 2);
         double z = j < 2 ? top[end] : fmax(top[end], bottom[end]);
+        /* Horizontal repeat spans the whole wall regardless of its length.
+         * Vertical mapping is relative to this span's top at each endpoint. */
         double u = (end ? a->xrepeat * 8.0 : 0.0) / t->width +
             a->xpanning / (double)t->width;
         double texv = (z - top[end]) * a->yrepeat / (2048.0 * t->height) +
@@ -350,6 +381,7 @@ static bool wall_quad(DukeRenderer *r, Source *src, const DukeMapFile *m, int w,
 
     return emit(r, v, tile);
 }
+
 static bool geometry(DukeRenderer *r, Source *src, const DukeMapFile *m) {
     for (int s = 0; s < m->numsectors; s++) {
         if (!floors(r, src, m, s)) {
@@ -358,6 +390,9 @@ static bool geometry(DukeRenderer *r, Source *src, const DukeMapFile *m) {
         const DukeMapSector *sector = m->sectors[s];
         for (int w = sector->wallptr; w < sector->wallptr + sector->wallnum; w++) {
             const DukeMapWall *a = m->walls[w], *b = m->walls[a->point2];
+            /* Sample both sectors at each endpoint to preserve sloped
+             * ceilings/floors along the shared wall. nt/nb belong to the
+             * neighboring sector and are only used for portal walls. */
             double top[2], bottom[2], nt[2], nb[2];
             for (int j = 0; j < 2; j++) {
                 double x = j ? b->x : a->x, y = j ? b->y : a->y;
@@ -368,11 +403,15 @@ static bool geometry(DukeRenderer *r, Source *src, const DukeMapFile *m) {
                     nb[j] = surface(m, a->nextsector, true, x, y);
                 }
             }
+            /* Solid boundaries and one-way walls (bit 32) cover the full
+             * sector height. Portals leave the overlapping opening clear. */
             if (a->nextsector < 0 || (a->cstat & 32)) {
                 if (!wall_quad(r, src, m, w, top, bottom, a->picnum)) {
                     return false;
                 }
             } else {
+                /* Clamp neighboring heights to this sector: the strips
+                 * above and below the opening use the main wall texture. */
                 double upper[2], lower[2];
                 for (int j = 0; j < 2; j++) {
                     upper[j] = fmin(bottom[j], fmax(top[j], nt[j]));
@@ -382,6 +421,8 @@ static bool geometry(DukeRenderer *r, Source *src, const DukeMapFile *m) {
                         !wall_quad(r, src, m, w, lower, bottom, a->picnum)) {
                     return false;
                 }
+                /* Masked walls (bit 16) add an overlay across the opening.
+                 * Transparent texels are discarded by the fragment shader. */
                 if (a->cstat & 16) {
                     if (!wall_quad(r, src, m, w, upper, lower, a->overpicnum)) {
                         return false;
@@ -401,6 +442,8 @@ static bool pipeline(DukeRenderer *r, const DukeRendererDesc *desc) {
         "vec2 texcoord;layout(location=2) in float light;uniform mat4 mvp;out "
         "vec2 uv;out float brightness;void "
         "main(){gl_Position=mvp*vec4(position,1);uv=texcoord;brightness=light;}";
+    /* Alpha is a binary cutout here: surviving fragments are opaque and
+     * write depth. This pipeline does not blend translucent surfaces. */
     sh.fragment_func.source =
         "#version 410\nuniform sampler2D tex;in vec2 uv;in float brightness;out "
         "vec4 frag;void main(){vec4 "
@@ -432,6 +475,8 @@ static bool pipeline(DukeRenderer *r, const DukeRendererDesc *desc) {
     p.layout.attrs[1].format = SG_VERTEXFORMAT_FLOAT2;
     p.layout.attrs[2].format = SG_VERTEXFORMAT_FLOAT;
     r->pipeline = sg_make_pipeline(&p);
+    /* Nearest sampling preserves ART pixels; repeats support UVs outside
+     * [0, 1] from wall repeats and world-aligned floor/ceiling coordinates. */
     r->sampler =
         sg_make_sampler(&(sg_sampler_desc){.min_filter = SG_FILTER_NEAREST,
                 .mag_filter = SG_FILTER_NEAREST,
@@ -472,6 +517,8 @@ DukeRenderer *duke_renderer_create(DukeMapFile *map, DukeGrpFile *grp,
     if (!source_load(&src, grp)) {
         goto fail;
     }
+    /* Create the fallback before tessellation, which may reference it and
+     * lazily upload every real tile needed by the generated surfaces. */
     const uint8_t checker[16] = {255, 0,  255, 255, 20,  20, 20,  255,
         20,  20, 20,  255, 255, 0,  255, 255};
     message = "Unable to create textures or sector geometry (check Sokol "
@@ -489,10 +536,13 @@ DukeRenderer *duke_renderer_create(DukeMapFile *map, DukeGrpFile *grp,
     if (sg_query_buffer_state(r->buffer) != SG_RESOURCESTATE_VALID) {
         goto fail;
     }
+    /* GPU uploads own their data now; retain only draw ranges and resource
+     * handles for subsequent frames. */
     free(r->vertices);
     r->vertices = NULL;
     source_free(&src);
     return r;
+    /* Both cleanup routines accept partially initialized, zero-filled state. */
 fail:
     if (error && error_size) {
         snprintf(error, error_size, "%s", message);
@@ -507,6 +557,9 @@ void duke_renderer_draw(DukeRenderer *r, const float mvp[16]) {
     if (!r || !mvp) {
         return;
     }
+
+    /* The host may issue graphics calls between frames. Invalidate Sokol
+     * cached bindings so this draw reapplies the state it depends on. */
     sg_reset_state_cache();
     sg_apply_pipeline(r->pipeline);
     sg_apply_uniforms(0, &(sg_range){mvp, 16 * sizeof(float)});
@@ -536,6 +589,8 @@ void duke_renderer_destroy(DukeRenderer *r) {
     if (r->sampler.id) {
         sg_destroy_sampler(r->sampler);
     }
+
+    /* Include the fallback slot and destroy views before their images. */
     for (int i = 0; i <= TILE_COUNT; i++) {
         if (r->textures[i].view.id) {
             sg_destroy_view(r->textures[i].view);
