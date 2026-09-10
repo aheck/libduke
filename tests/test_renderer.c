@@ -126,9 +126,164 @@ static void sprite_tests(void) {
     duke_renderer_destroy(r);
 }
 
+static void hover_plane(DukeRenderer *r, float z, int wall, int tile) {
+    Vertex a = {.p = {-0.8f, -0.8f, z}, .uv = {0, 0}, .alpha = 1}, b = a, c = a,
+           d = a;
+    b.p[0] = 0.8f;
+    b.uv[0] = 1;
+    c.p[0] = 0.8f;
+    c.p[1] = 0.8f;
+    c.uv[0] = c.uv[1] = 1;
+    d.p[1] = 0.8f;
+    d.uv[1] = 1;
+    Vertex v[6] = {a, b, c, a, c, d};
+    assert(emit(r, v, tile));
+    Draw *draw = &r->draws[r->draw_count - 1];
+    draw->surface = DUKE_SURFACE_WALL;
+    draw->sector = 3;
+    draw->wall = wall;
+}
+static void hover_tests(void) {
+    const float identity[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+    DukeRenderer *r = calloc(1, sizeof(*r));
+    assert(r);
+    /* Enough planes to exercise internal hierarchy nodes, all behind the first.
+     */
+    for (int i = 0; i < 24; i++) {
+        hover_plane(r, i / 30.0f, 100 + i, 0);
+    }
+    assert(build_picking(r));
+    assert(r->node_count > 1);
+    DukeSurfaceHit hit;
+    duke_renderer_set_pointer(r, 0, 0);
+    update_hover(r, identity);
+    assert(!duke_renderer_get_hovered_surface(r, &hit) && hit.wall_index == -1);
+    duke_renderer_set_hover_enabled(r, true);
+    update_hover(r, identity);
+    assert(duke_renderer_get_hovered_surface(r, &hit));
+    assert(hit.kind == DUKE_SURFACE_WALL && hit.wall_index == 100 &&
+           hit.sector_index == 3);
+    assert(fabs(hit.distance - 1) < 1e-6 && fabs(hit.position[2]) < 1e-6);
+    assert(highlighted(r, &r->draws[0]) && !highlighted(r, &r->draws[1]));
+    duke_renderer_set_pointer(r, 0.99f, 0);
+    assert(!duke_renderer_get_hovered_surface(r, &hit));
+    update_hover(r, identity);
+    assert(!duke_renderer_get_hovered_surface(r, &hit));
+    duke_renderer_set_pointer(r, 2, 0);
+    update_hover(r, identity);
+    assert(!duke_renderer_get_hovered_surface(r, &hit));
+    duke_renderer_set_pointer(r, NAN, 0);
+    assert(!r->pointer_valid);
+    duke_renderer_set_pointer(r, 0, 0);
+    update_hover(r, identity);
+    duke_renderer_set_hover_enabled(r, false);
+    assert(!duke_renderer_get_hovered_surface(r, &hit));
+    duke_renderer_set_hover_enabled(r, true);
+    float singular[16] = {0};
+    update_hover(r, singular);
+    assert(!duke_renderer_get_hovered_surface(r, &hit));
+    duke_renderer_destroy(r);
+
+    r = calloc(1, sizeof(*r));
+    assert(r);
+    hover_plane(r, 0, 1, 0);
+    hover_plane(r, 0.5f, 2, 1);
+    r->textures[0].width = 2;
+    r->textures[0].height = 2;
+    r->textures[0].alpha = calloc(4, 1);
+    assert(r->textures[0].alpha);
+    assert(build_picking(r));
+    duke_renderer_set_hover_enabled(r, true);
+    duke_renderer_set_pointer(r, 0, 0);
+    update_hover(r, identity);
+    assert(duke_renderer_get_hovered_surface(r, &hit) && hit.wall_index == 2);
+    memset(r->textures[0].alpha, 255, 4);
+    update_hover(r, identity);
+    assert(duke_renderer_get_hovered_surface(r, &hit) && hit.wall_index == 1);
+    /* Replace the first picking face by a sprite without touching the rear
+     * wall. */
+    for (int i = 0; i < r->face_count; i++) {
+        if (r->faces[i].draw.wall == 1) {
+            r->faces[i].draw.sprite = true;
+        }
+    }
+    r->draws[0].sprite = true;
+    update_hover(r, identity);
+    assert(!duke_renderer_get_hovered_surface(r, &hit));
+    memset(r->textures[0].alpha, 0, 4);
+    update_hover(r, identity);
+    assert(duke_renderer_get_hovered_surface(r, &hit) && hit.wall_index == 2);
+    memset(r->textures[0].alpha, 255, 4);
+    r->draws[0].translucent = true;
+    for (int i = 0; i < r->face_count; i++) {
+        if (r->faces[i].draw.wall == 1) {
+            r->faces[i].draw.translucent = true;
+        }
+    }
+    update_hover(r, identity);
+    assert(duke_renderer_get_hovered_surface(r, &hit) && hit.wall_index == 2);
+    /* One-sided CCW plane viewed from behind should not occlude. */
+    r->draws[0].translucent = false;
+    r->draws[0].one_sided = true;
+    for (int i = 0; i < r->face_count; i++) {
+        if (r->faces[i].draw.wall == 1) {
+            r->faces[i].draw.translucent = false;
+            r->faces[i].draw.one_sided = true;
+        }
+    }
+    update_hover(r, identity);
+    assert(duke_renderer_get_hovered_surface(r, &hit) && hit.wall_index == 2);
+    duke_renderer_destroy(r);
+
+    /* Real sector surfaces: a downward ray hits the floor inside the ring,
+     * while a ray through its hole must miss both floor and ceiling. */
+    const int xy[][2] = {{0, 0},       {4096, 0},    {4096, 4096},
+                         {0, 4096},    {1024, 1024}, {1024, 3072},
+                         {3072, 3072}, {3072, 1024}};
+    DukeMapFile *m = fixture(xy, 8, 4);
+    m->sectors[0]->floorstat = 2;
+    m->sectors[0]->floorheinum = 256;
+    r = calloc(1, sizeof(*r));
+    assert(r);
+    Source src = {0};
+    r->textures[TILE_COUNT].width = r->textures[TILE_COUNT].height = 2;
+    assert(floors(r, &src, m, 0));
+    assert(build_picking(r));
+    double o[3] = {0.5, 0.5, 0.5}, dir[3] = {0, -1, 0}, limit = 10;
+    r->hit = no_hit();
+    pick_node(r, 0, identity, o, dir, &limit);
+    assert(r->hit.kind == DUKE_SURFACE_FLOOR && r->hit.sector_index == 0 &&
+           r->hit.wall_index == -1);
+    assert(fabs(r->hit.position[1] + 0.03125) < 1e-6);
+    dir[1] = 1;
+    limit = 10;
+    r->hit = no_hit();
+    pick_node(r, 0, identity, o, dir, &limit);
+    assert(r->hit.kind == DUKE_SURFACE_CEILING);
+    o[0] = o[2] = 2;
+    limit = 10;
+    r->hit = no_hit();
+    pick_node(r, 0, identity, o, dir, &limit);
+    assert(r->hit.kind == DUKE_SURFACE_NONE);
+    duke_map_file_free(m);
+    duke_renderer_destroy(r);
+    /* A rotated/translated orthographic view unprojects into the expected axis.
+     */
+    float rotated[16] = {0, 0, 1, 0, 0, 1, 0, 0, -1, 0, 0, 0, 0, 0, -2, 1};
+    double ray_o[3], ray_d[3], far;
+    float pointer[2] = {0, 0};
+    assert(pointer_ray(rotated, pointer, ray_o, ray_d, &far));
+    assert(fabs(ray_o[0] - 1) < 1e-8 && fabs(ray_d[0] - 1) < 1e-8);
+    const float perspective[16] = {
+        1, 0, 0, 0, 0, 1, 0, 0, 0, 0, -10.1f / 9.9f, -1, 0, 0, -2.0f / 9.9f, 0};
+    assert(pointer_ray(perspective, pointer, ray_o, ray_d, &far));
+    assert(fabs(ray_o[2] + 0.1) < 1e-6 && fabs(ray_d[2] + 1) < 1e-6);
+}
+
 int main(void) {
     sg_setup(&(sg_desc){0});
     sprite_tests();
+    hover_tests();
     const int ring[][2] = {{0, 0},       {4096, 0},    {4096, 4096},
                            {0, 4096},    {1024, 1024}, {1024, 3072},
                            {3072, 3072}, {3072, 1024}};

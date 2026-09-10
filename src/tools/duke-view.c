@@ -17,6 +17,8 @@ static struct {
     DukeRenderer *renderer;
     float position[3], yaw, pitch;
     bool keys[SAPP_MAX_KEYCODES];
+    bool hover_enabled, pointer_valid;
+    float mouse_x, mouse_y;
     int frames, frame_limit;
 } state;
 
@@ -100,6 +102,16 @@ static void frame(void) {
     if (sapp_width() > 0 && sapp_height() > 0) {
         float mvp[16];
         camera(mvp);
+        /* Captured mouse look targets the center; otherwise follow the cursor. */
+        if (sapp_mouse_locked()) {
+            duke_renderer_set_pointer(state.renderer, 0, 0);
+        } else if (state.pointer_valid) {
+            duke_renderer_set_pointer(state.renderer,
+                                      2 * state.mouse_x / sapp_widthf() - 1,
+                                      1 - 2 * state.mouse_y / sapp_heightf());
+        } else {
+            duke_renderer_set_pointer(state.renderer, 2, 2);
+        }
         sg_begin_pass(&(sg_pass){
                 .swapchain = sglue_swapchain(),
                 .action.colors[0] = {.load_action = SG_LOADACTION_CLEAR,
@@ -117,6 +129,14 @@ static void event(const sapp_event *e) {
         if (e->key_code > 0 && e->key_code < SAPP_MAX_KEYCODES) {
             state.keys[e->key_code] = e->type == SAPP_EVENTTYPE_KEY_DOWN;
         }
+        if (e->type == SAPP_EVENTTYPE_KEY_DOWN && !e->key_repeat &&
+            e->key_code == SAPP_KEYCODE_H) {
+            state.hover_enabled = !state.hover_enabled;
+            duke_renderer_set_hover_enabled(state.renderer, state.hover_enabled);
+            sapp_set_window_title(state.hover_enabled
+                ? "Duke map viewer — hover ON (H to toggle)"
+                : "Duke map viewer — hover OFF (H to toggle)");
+        }
         if (e->type == SAPP_EVENTTYPE_KEY_DOWN &&
                 e->key_code == SAPP_KEYCODE_ESCAPE) {
             if (sapp_mouse_locked()) {
@@ -130,12 +150,23 @@ static void event(const sapp_event *e) {
             e->mouse_button == SAPP_MOUSEBUTTON_LEFT) {
         sapp_lock_mouse(true);
     }
+    if (e->type == SAPP_EVENTTYPE_MOUSE_MOVE ||
+        e->type == SAPP_EVENTTYPE_MOUSE_ENTER ||
+        e->type == SAPP_EVENTTYPE_MOUSE_DOWN) {
+        state.mouse_x = e->mouse_x;
+        state.mouse_y = e->mouse_y;
+        state.pointer_valid = true;
+    }
+    if (e->type == SAPP_EVENTTYPE_MOUSE_LEAVE) {
+        state.pointer_valid = false;
+    }
     if (e->type == SAPP_EVENTTYPE_MOUSE_MOVE && sapp_mouse_locked()) {
         state.yaw += e->mouse_dx * 0.003f;
         state.pitch -= e->mouse_dy * 0.003f;
         state.pitch = fmaxf(-1.5f, fminf(1.5f, state.pitch));
     }
     if (e->type == SAPP_EVENTTYPE_UNFOCUSED) {
+        state.pointer_valid = false;
         memset(state.keys, 0, sizeof(state.keys));
         sapp_lock_mouse(false);
     }
@@ -150,7 +181,7 @@ static void cleanup(void) {
 sapp_desc sokol_main(int argc, char **argv) {
     if (argc == 2 && (!strcmp(argv[1], "--help") || !strcmp(argv[1], "-h"))) {
         puts("Usage: duke-view MAP GRP [--frames N]\nW/S: fly along view | A/D: strafe | "
-                "Shift: faster | Click: mouse look | Esc: release mouse/quit\nStatic "
+                "Shift: faster | H: toggle surface highlight | Click: mouse look | Esc: release mouse/quit\nStatic "
                 "free-flight viewer; no collision or game simulation.");
         exit(EXIT_SUCCESS);
     }
@@ -186,7 +217,7 @@ sapp_desc sokol_main(int argc, char **argv) {
         .cleanup_cb = cleanup,
         .width = 1280,
         .height = 720,
-        .window_title = "Duke map viewer — click for mouse look",
+        .window_title = "Duke map viewer — hover OFF (H to toggle)",
         .logger.func = slog_func,
         .gl = {.major_version = 4, .minor_version = 1}};
 }

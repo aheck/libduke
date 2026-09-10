@@ -30,6 +30,9 @@ require window/input dependencies.
 
 Controls: W/S flies forward/backward along the look direction, including pitch.
 A/D strafes horizontally, and Shift increases speed.
+H toggles surface highlighting (off initially); the window title shows its state.
+Highlighting follows the cursor when released and targets the center of the view
+while mouse look is captured.
 Click to capture the mouse for look; Escape releases it, then exits. Losing focus
 releases input. Navigation starts at the map's player position and angle and is
 free-flight: no collision, gravity, game simulation or sprite interactions.
@@ -85,3 +88,42 @@ are not supported. Crossing sloped portal boundaries use endpoint approximation.
 Tests cover concave/hole triangulation area and containment, slope heights,
 invalid renderer arguments and Sokol resource setup using a dummy backend. The
 viewer can additionally be smoke-tested against a real map/GRP with `--frames`.
+
+
+## Optional surface hover
+
+Hover picking is disabled by default. Before a draw, enable it and supply the
+pointer relative to the rendering viewport (not the entire host window):
+
+```c
+duke_renderer_set_hover_enabled(renderer, true);
+duke_renderer_set_pointer(renderer, 2.0f * mouse_x / viewport_width - 1.0f,
+                                   1.0f - 2.0f * mouse_y / viewport_height);
+/* Begin the host pass, then: */
+duke_renderer_draw(renderer, view_projection);
+DukeSurfaceHit hit;
+if (duke_renderer_get_hovered_surface(renderer, &hit)) {
+    /* hit.kind, hit.sector_index and hit.wall_index identify snapshot records. */
+}
+```
+
+Use coordinates in matching units (logical or framebuffer pixels). In locked
+mouse-look mode pass (0, 0) to target the center of the view. Passing outside
+[-1, 1], or disabling hover, immediately clears the result. A pointer update
+clears the previous result until the next draw. Turning hover off skips picking
+and removes the tint on the next draw; it does not rebuild GPU resources.
+
+The hovered floor/ceiling is tinted across the whole sector. A wall highlight
+covers the rendered bands of the sector-facing Build wall record. IDs belong to
+the renderer snapshot; hit positions use renderer world coordinates, and distance
+is measured from the ray's near-plane origin. Sprites are not selectable: their
+opaque pixels occlude surfaces, while transparent texels and translucent sprites
+let picking through. Alpha tests match the renderer's nearest/repeating texture
+sampling and one-sided sprites respect their visible face.
+
+CPU picking retains mesh vertices and texture alpha, plus a bounding-volume
+hierarchy for static surfaces. Face sprites are intersected in their current
+shader orientation each draw. This increases persistent CPU memory. Picking uses
+the same approximate scene visibility as rendering; it does not add Build portal
+visibility or resolve overlapping-sector ambiguities. Perspective and orthographic
+matrices are supported; singular/nonfinite matrices yield no hover result.

@@ -8,6 +8,48 @@ extern "C" {
 #endif
 
 typedef struct DukeRenderer DukeRenderer;
+/** @brief Type of hovered map surface; sprites occlude but are not selectable.
+ */
+typedef enum DukeSurfaceKind {
+    DUKE_SURFACE_NONE,
+    DUKE_SURFACE_WALL,
+    DUKE_SURFACE_FLOOR,
+    DUKE_SURFACE_CEILING
+} DukeSurfaceKind;
+/** @brief Surface identity in the renderer's map snapshot, plus world-space
+ * hit. */
+typedef struct DukeSurfaceHit {
+    DukeSurfaceKind kind;
+    int sector_index;
+    int wall_index; /* Sector-facing Build wall index, or -1 for
+                       floors/ceilings. */
+    float position[3];
+    float distance; /* World units from the pointer ray's near-plane origin. */
+} DukeSurfaceHit;
+/**
+ * @brief Enable or disable pointer picking and surface tinting (default
+ * disabled). Disabling immediately clears the queried hit. NULL is allowed.
+ * Call on the graphics thread between draw calls; this does not change map
+ * data.
+ */
+void duke_renderer_set_hover_enabled(DukeRenderer *renderer, bool enabled);
+/**
+ * @brief Set pointer coordinates relative to the host's rendering viewport.
+ * X spans -1 (left) to +1 (right); Y spans -1 (bottom) to +1 (top).
+ * Outside/nonfinite coordinates clear the hit and suppress picking. Each call
+ * clears the previous result; the next draw computes a fresh hit. NULL is
+ * allowed.
+ */
+void duke_renderer_set_pointer(DukeRenderer *renderer, float x, float y);
+/**
+ * @brief Copy the hovered surface from the most recent draw, if any.
+ * Returns false and writes NONE/-1 IDs when disabled, no hit, or no draw since
+ * the pointer changed. NULL renderer/output are accepted and return false.
+ * IDs refer to the immutable map snapshot supplied at renderer creation.
+ */
+bool duke_renderer_get_hovered_surface(const DukeRenderer *renderer,
+                                       DukeSurfaceHit *hit);
+
 /** @brief Attachment formats of the host's render pass. Zero uses Sokol
  * defaults. */
 typedef struct DukeRendererDesc {

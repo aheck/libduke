@@ -23,13 +23,30 @@ typedef struct Texture {
     sg_view view;
     int width, height;
     int xoffset, yoffset;
+    uint8_t *alpha;
 } Texture;
 typedef struct Draw {
     int first, count, tile;
     bool sprite, translucent, one_sided;
     float center[3], depth;
+    DukeSurfaceKind surface;
+    int sector, wall;
 } Draw;
+typedef struct PickFace {
+    Draw draw;
+    double key;
+} PickFace;
+typedef struct PickNode {
+    double lo[3], hi[3];
+    int first, count, left, right;
+} PickNode;
 struct DukeRenderer {
+    PickFace *faces;
+    PickNode *nodes;
+    int face_count, node_count;
+    bool hover_enabled, pointer_valid;
+    float pointer[2];
+    DukeSurfaceHit hit;
     sg_shader shader;
     sg_pipeline pipeline;
     sg_pipeline sprite_pipelines[4];
@@ -115,6 +132,13 @@ static bool source_load(Source *s, DukeGrpFile *grp) {
 }
 
 static bool upload(Texture *t, int width, int height, const void *rgba) {
+    t->alpha = malloc((size_t)width * height);
+    if (!t->alpha) {
+        return false;
+    }
+    for (size_t i = 0; i < (size_t)width * height; i++) {
+        t->alpha[i] = ((const uint8_t *)rgba)[i * 4 + 3];
+    }
     t->width = width;
     t->height = height;
     t->image = sg_make_image(&(sg_image_desc){
@@ -347,6 +371,13 @@ static bool floors(DukeRenderer *r, Source *src, const DukeMapFile *m, int id) {
                     triangles[j] = quad[order[j]];
                 }
                 ok = emit(r, triangles, tile);
+                if (ok) {
+                    Draw *d = &r->draws[r->draw_count - 1];
+                    d->surface =
+                        floor ? DUKE_SURFACE_FLOOR : DUKE_SURFACE_CEILING;
+                    d->sector = id;
+                    d->wall = -1;
+                }
             }
         }
     }
@@ -356,8 +387,9 @@ static bool floors(DukeRenderer *r, Source *src, const DukeMapFile *m, int id) {
     return ok;
 }
 
-static bool wall_quad(DukeRenderer *r, Source *src, const DukeMapFile *m, int w,
-                      double top[2], double bottom[2], int pic) {
+static bool wall_quad(DukeRenderer *r, Source *src, const DukeMapFile *m,
+                      int sector, int w, double top[2], double bottom[2],
+                      int pic) {
     /* Build heights increase downward. Empty spans need no geometry; if
      * only one end is closed, collapse that end rather than invert it. */
     if (bottom[0] <= top[0] && bottom[1] <= top[1]) {
@@ -396,7 +428,14 @@ static bool wall_quad(DukeRenderer *r, Source *src, const DukeMapFile *m, int w,
         v[j] = q[order[j]];
     }
 
-    return emit(r, v, tile);
+    if (!emit(r, v, tile)) {
+        return false;
+    }
+    Draw *d = &r->draws[r->draw_count - 1];
+    d->surface = DUKE_SURFACE_WALL;
+    d->sector = sector;
+    d->wall = w;
+    return true;
 }
 
 static bool geometry(DukeRenderer *r, Source *src, const DukeMapFile *m) {
@@ -424,7 +463,7 @@ static bool geometry(DukeRenderer *r, Source *src, const DukeMapFile *m) {
             /* Solid boundaries and one-way walls (bit 32) cover the full
              * sector height. Portals leave the overlapping opening clear. */
             if (a->nextsector < 0 || (a->cstat & 32)) {
-                if (!wall_quad(r, src, m, w, top, bottom, a->picnum)) {
+                if (!wall_quad(r, src, m, s, w, top, bottom, a->picnum)) {
                     return false;
                 }
             } else {
@@ -435,14 +474,15 @@ static bool geometry(DukeRenderer *r, Source *src, const DukeMapFile *m) {
                     upper[j] = fmin(bottom[j], fmax(top[j], nt[j]));
                     lower[j] = fmax(top[j], fmin(bottom[j], nb[j]));
                 }
-                if (!wall_quad(r, src, m, w, top, upper, a->picnum) ||
-                    !wall_quad(r, src, m, w, lower, bottom, a->picnum)) {
+                if (!wall_quad(r, src, m, s, w, top, upper, a->picnum) ||
+                    !wall_quad(r, src, m, s, w, lower, bottom, a->picnum)) {
                     return false;
                 }
                 /* Masked walls (bit 16) add an overlay across the opening.
                  * Transparent texels are discarded by the fragment shader. */
                 if (a->cstat & 16) {
-                    if (!wall_quad(r, src, m, w, upper, lower, a->overpicnum)) {
+                    if (!wall_quad(r, src, m, s, w, upper, lower,
+                                   a->overpicnum)) {
                         return false;
                     }
                 }
@@ -547,6 +587,307 @@ static int compare_draw(const void *a, const void *b) {
     return (x->first > y->first) - (x->first < y->first);
 }
 
+static DukeSurfaceHit no_hit(void) {
+    return (DukeSurfaceHit){
+        .kind = DUKE_SURFACE_NONE, .sector_index = -1, .wall_index = -1};
+}
+void duke_renderer_set_hover_enabled(DukeRenderer *r, bool enabled) {
+    if (r) {
+        r->hover_enabled = enabled;
+        if (!enabled) {
+            r->hit = no_hit();
+        }
+    }
+}
+void duke_renderer_set_pointer(DukeRenderer *r, float x, float y) {
+    if (!r) {
+        return;
+    }
+    r->pointer[0] = x;
+    r->pointer[1] = y;
+    r->pointer_valid =
+        isfinite(x) && isfinite(y) && fabsf(x) <= 1 && fabsf(y) <= 1;
+    r->hit = no_hit();
+}
+bool duke_renderer_get_hovered_surface(const DukeRenderer *r,
+                                       DukeSurfaceHit *hit) {
+    if (hit) {
+        *hit = no_hit();
+    }
+    if (!r || !hit || !r->hover_enabled || r->hit.kind == DUKE_SURFACE_NONE) {
+        return false;
+    }
+    *hit = r->hit;
+    return true;
+}
+static int pick_compare(const void *a, const void *b) {
+    double x = ((const PickFace *)a)->key, y = ((const PickFace *)b)->key;
+    return (x > y) - (x < y);
+}
+static int build_node(DukeRenderer *r, int first, int count, int depth) {
+    int id = r->node_count++;
+    PickNode *n = &r->nodes[id];
+    n->first = first;
+    n->count = count;
+    n->left = n->right = -1;
+    for (int k = 0; k < 3; k++) {
+        n->lo[k] = INFINITY;
+        n->hi[k] = -INFINITY;
+    }
+    for (int i = first; i < first + count; i++) {
+        const Draw *d = &r->faces[i].draw;
+        for (int v = 0; v < d->count; v++) {
+            for (int k = 0; k < 3; k++) {
+                double p = r->vertices[d->first + v].p[k];
+                n->lo[k] = fmin(n->lo[k], p);
+                n->hi[k] = fmax(n->hi[k], p);
+            }
+        }
+    }
+    if (count <= 8 || depth >= 32) {
+        return id;
+    }
+    int axis = 0;
+    for (int k = 1; k < 3; k++) {
+        if (n->hi[k] - n->lo[k] > n->hi[axis] - n->lo[axis]) {
+            axis = k;
+        }
+    }
+    for (int i = first; i < first + count; i++) {
+        const Draw *d = &r->faces[i].draw;
+        double sum = 0;
+        for (int v = 0; v < d->count; v++) {
+            sum += r->vertices[d->first + v].p[axis];
+        }
+        r->faces[i].key = sum / d->count;
+    }
+    qsort(r->faces + first, count, sizeof(*r->faces), pick_compare);
+    n->left = build_node(r, first, count / 2, depth + 1);
+    n->right = build_node(r, first + count / 2, count - count / 2, depth + 1);
+    return id;
+}
+static bool build_picking(DukeRenderer *r) {
+    r->faces = calloc(r->draw_count, sizeof(*r->faces));
+    r->nodes = calloc(r->draw_count * 2 + 1, sizeof(*r->nodes));
+    if (!r->faces || !r->nodes) {
+        return false;
+    }
+    for (size_t i = 0; i < r->draw_count; i++) {
+        if (!r->draws[i].sprite) {
+            r->faces[r->face_count++].draw = r->draws[i];
+        }
+    }
+    if (r->face_count) {
+        build_node(r, 0, r->face_count, 0);
+    }
+    return true;
+}
+/* Invert the host's matrix with pivoting; supports perspective and orthographic
+ * projections and rejects singular/nonfinite matrices instead of stale hits. */
+static bool pointer_ray(const float m[16], const float pointer[2], double o[3],
+                        double dir[3], double *limit) {
+    double a[4][8];
+    for (int row = 0; row < 4; row++) {
+        for (int col = 0; col < 8; col++) {
+            a[row][col] = col < 4 ? m[col * 4 + row] : (col - 4 == row);
+            if (!isfinite(a[row][col])) {
+                return false;
+            }
+        }
+    }
+    for (int col = 0; col < 4; col++) {
+        int pivot = col;
+        for (int row = col + 1; row < 4; row++) {
+            if (fabs(a[row][col]) > fabs(a[pivot][col])) {
+                pivot = row;
+            }
+        }
+        if (fabs(a[pivot][col]) < 1e-15) {
+            return false;
+        }
+        for (int k = 0; k < 8; k++) {
+            double temp = a[col][k];
+            a[col][k] = a[pivot][k];
+            a[pivot][k] = temp;
+        }
+        double scale = a[col][col];
+        for (int k = 0; k < 8; k++) {
+            a[col][k] /= scale;
+        }
+        for (int row = 0; row < 4; row++) {
+            if (row != col) {
+                double f = a[row][col];
+                for (int k = 0; k < 8; k++) {
+                    a[row][k] -= f * a[col][k];
+                }
+            }
+        }
+    }
+    double points[2][3];
+    for (int end = 0; end < 2; end++) {
+        /* An interior far sample also supports infinite-far projections. */
+        double clip[4] = {pointer[0], pointer[1], end ? 0.999999 : -1, 1},
+               p[4] = {0};
+        for (int row = 0; row < 4; row++) {
+            for (int k = 0; k < 4; k++) {
+                p[row] += a[row][k + 4] * clip[k];
+            }
+        }
+        if (fabs(p[3]) < 1e-15) {
+            return false;
+        }
+        for (int k = 0; k < 3; k++) {
+            points[end][k] = p[k] / p[3];
+        }
+    }
+    double length = 0;
+    for (int k = 0; k < 3; k++) {
+        o[k] = points[0][k];
+        dir[k] = points[1][k] - o[k];
+        length += dir[k] * dir[k];
+    }
+    length = sqrt(length);
+    if (!isfinite(length) || length < 1e-12) {
+        return false;
+    }
+    for (int k = 0; k < 3; k++) {
+        dir[k] /= length;
+    }
+    *limit = length;
+    return true;
+}
+static void cross3(const double a[3], const double b[3], double out[3]) {
+    out[0] = a[1] * b[2] - a[2] * b[1];
+    out[1] = a[2] * b[0] - a[0] * b[2];
+    out[2] = a[0] * b[1] - a[1] * b[0];
+}
+static double dot3(const double a[3], const double b[3]) {
+    return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+}
+static bool ray_box(const PickNode *n, const double o[3], const double dir[3],
+                    double limit) {
+    double near = 0, far = limit;
+    for (int k = 0; k < 3; k++) {
+        if (fabs(dir[k]) < 1e-15) {
+            if (o[k] < n->lo[k] - 1e-7 || o[k] > n->hi[k] + 1e-7) {
+                return false;
+            }
+        } else {
+            double a = (n->lo[k] - o[k]) / dir[k],
+                   b = (n->hi[k] - o[k]) / dir[k];
+            near = fmax(near, fmin(a, b));
+            far = fmin(far, fmax(a, b));
+            if (near > far + 1e-7) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+static void pick_draw(DukeRenderer *r, const Draw *d, const float mvp[16],
+                      const double o[3], const double dir[3], double *nearest) {
+    if (d->sprite && d->translucent) {
+        return;
+    }
+    double rx = mvp[0], rz = mvp[8], length = hypot(rx, rz);
+    if (length > 0.00001) {
+        rx /= length;
+        rz /= length;
+    } else {
+        rx = 1;
+        rz = 0;
+    }
+    for (int i = 0; i < d->count; i += 3) {
+        const Vertex *v = &r->vertices[d->first + i];
+        double p[3][3];
+        for (int j = 0; j < 3; j++) {
+            p[j][0] = v[j].p[0] + rx * v[j].billboard[0];
+            p[j][1] = v[j].p[1] + v[j].billboard[1];
+            p[j][2] = v[j].p[2] + rz * v[j].billboard[0];
+        }
+        double e1[3], e2[3], q[3], h[3], s[3];
+        for (int k = 0; k < 3; k++) {
+            e1[k] = p[1][k] - p[0][k];
+            e2[k] = p[2][k] - p[0][k];
+            s[k] = o[k] - p[0][k];
+        }
+        cross3(dir, e2, h);
+        double det = dot3(e1, h);
+        if (fabs(det) < 1e-12 || (d->one_sided && det <= 0)) {
+            continue;
+        }
+        double u = dot3(s, h) / det;
+        cross3(s, e1, q);
+        double w = dot3(dir, q) / det;
+        double distance = dot3(e2, q) / det;
+        if (u < -1e-8 || w < -1e-8 || u + w > 1 + 1e-8 || distance < 0 ||
+            distance > *nearest) {
+            continue;
+        }
+        const Texture *t = &r->textures[d->tile];
+        if (t->alpha) {
+            double tx =
+                v[0].uv[0] * (1 - u - w) + v[1].uv[0] * u + v[2].uv[0] * w;
+            double ty =
+                v[0].uv[1] * (1 - u - w) + v[1].uv[1] * u + v[2].uv[1] * w;
+            int x = (int)floor((tx - floor(tx)) * t->width),
+                y = (int)floor((ty - floor(ty)) * t->height);
+            if (t->alpha[(size_t)y * t->width + x] < 128) {
+                continue;
+            }
+        }
+        *nearest = distance;
+        r->hit = no_hit();
+        if (!d->sprite) {
+            r->hit.kind = d->surface;
+            r->hit.sector_index = d->sector;
+            r->hit.wall_index = d->wall;
+            r->hit.distance = distance;
+            for (int k = 0; k < 3; k++) {
+                r->hit.position[k] = o[k] + dir[k] * distance;
+            }
+        }
+    }
+}
+static void pick_node(DukeRenderer *r, int id, const float m[16],
+                      const double o[3], const double dir[3], double *near) {
+    const PickNode *n = &r->nodes[id];
+    if (!ray_box(n, o, dir, *near)) {
+        return;
+    }
+    if (n->left >= 0) {
+        pick_node(r, n->left, m, o, dir, near);
+        pick_node(r, n->right, m, o, dir, near);
+    } else {
+        for (int i = n->first; i < n->first + n->count; i++) {
+            pick_draw(r, &r->faces[i].draw, m, o, dir, near);
+        }
+    }
+}
+static void update_hover(DukeRenderer *r, const float m[16]) {
+    r->hit = no_hit();
+    if (!r->hover_enabled || !r->pointer_valid) {
+        return;
+    }
+    double o[3], dir[3], nearest;
+    if (!pointer_ray(m, r->pointer, o, dir, &nearest)) {
+        return;
+    }
+    if (r->face_count) {
+        pick_node(r, 0, m, o, dir, &nearest);
+    }
+    for (size_t i = 0; i < r->draw_count; i++) {
+        if (r->draws[i].sprite) {
+            pick_draw(r, &r->draws[i], m, o, dir, &nearest);
+        }
+    }
+}
+static bool highlighted(const DukeRenderer *r, const Draw *d) {
+    return r->hover_enabled && r->hit.kind != DUKE_SURFACE_NONE && !d->sprite &&
+           d->surface == r->hit.kind && d->sector == r->hit.sector_index &&
+           d->wall == r->hit.wall_index;
+}
+
 static bool pipeline(DukeRenderer *r, const DukeRendererDesc *desc) {
     sg_shader_desc sh = {0};
     sh.vertex_func.source =
@@ -564,14 +905,20 @@ static bool pipeline(DukeRenderer *r, const DukeRendererDesc *desc) {
         "}";
     sh.fragment_func.source =
         "#version 410\nuniform sampler2D tex;in vec2 uv;in float brightness;in "
-        "float alpha;out vec4 frag;"
+        "float alpha;uniform vec4 hover_tint;out vec4 frag;"
         "void main(){vec4 "
-        "c=texture(tex,uv);if(c.a<0.5)discard;frag=vec4(c.rgb*brightness,alpha)"
+        "c=texture(tex,uv);if(c.a<0.5)discard;frag=vec4(mix(c.rgb*brightness,"
+        "hover_tint.rgb,hover_tint.a),alpha)"
         ";}";
     sh.uniform_blocks[0] = (sg_shader_uniform_block){
         .stage = SG_SHADERSTAGE_VERTEX,
         .size = 64,
         .glsl_uniforms[0] = {.type = SG_UNIFORMTYPE_MAT4, .glsl_name = "mvp"}};
+    sh.uniform_blocks[1] = (sg_shader_uniform_block){
+        .stage = SG_SHADERSTAGE_FRAGMENT,
+        .size = 16,
+        .glsl_uniforms[0] = {.type = SG_UNIFORMTYPE_FLOAT4,
+                             .glsl_name = "hover_tint"}};
     sh.views[0].texture =
         (sg_shader_texture_view){.stage = SG_SHADERSTAGE_FRAGMENT,
                                  .image_type = SG_IMAGETYPE_2D,
@@ -675,10 +1022,11 @@ DukeRenderer *duke_renderer_create(DukeMapFile *map, DukeGrpFile *grp,
     if (sg_query_buffer_state(r->buffer) != SG_RESOURCESTATE_VALID) {
         goto fail;
     }
-    /* GPU uploads own their data now; retain only draw ranges and resource
-     * handles for subsequent frames. */
-    free(r->vertices);
-    r->vertices = NULL;
+    /* Keep CPU vertices and alpha alongside GPU resources for exact picking. */
+    message = "Unable to build surface picking hierarchy";
+    if (!build_picking(r)) {
+        goto fail;
+    }
     source_free(&src);
     return r;
     /* Both cleanup routines accept partially initialized, zero-filled state. */
@@ -699,6 +1047,7 @@ void duke_renderer_draw(DukeRenderer *r, const float mvp[16]) {
 
     /* The host may issue graphics calls between frames. Invalidate Sokol
      * cached bindings so this draw reapplies the state it depends on. */
+    update_hover(r, mvp);
     sg_reset_state_cache();
     /* Opaque geometry first; blended sprites back-to-front, with depth testing
      * but no depth writes. Sorting centers is an approximation for
@@ -721,6 +1070,9 @@ void duke_renderer_draw(DukeRenderer *r, const float mvp[16]) {
             sg_apply_uniforms(0, &(sg_range){mvp, 16 * sizeof(float)});
             current = selected;
         }
+        const float tint[4] = {1.0f, 0.7f, 0.15f,
+                               highlighted(r, &d) ? 0.4f : 0.0f};
+        sg_apply_uniforms(1, &(sg_range){tint, sizeof(tint)});
         sg_bindings b = {.vertex_buffers[0] = r->buffer,
                          .views[0] = r->textures[d.tile].view,
                          .samplers[0] = r->sampler};
@@ -760,6 +1112,11 @@ void duke_renderer_destroy(DukeRenderer *r) {
             sg_destroy_image(r->textures[i].image);
         }
     }
+    for (int i = 0; i <= TILE_COUNT; i++) {
+        free(r->textures[i].alpha);
+    }
+    free(r->faces);
+    free(r->nodes);
     free(r->draws);
     free(r->vertices);
     free(r);
