@@ -2,6 +2,7 @@
 #define SOKOL_LOG_IMPL
 #define SOKOL_GLUE_IMPL
 #include "libduke/renderer.h"
+#include "libduke/camera.h"
 #include "sokol_app.h"
 #include "sokol_glue.h"
 #include "sokol_log.h"
@@ -15,7 +16,7 @@ static struct {
     DukeMapFile *map;
     DukeGrpFile *grp;
     DukeRenderer *renderer;
-    float position[3], yaw, pitch;
+    DukeCamera camera;
     bool keys[SAPP_MAX_KEYCODES];
     bool hover_enabled, pointer_valid;
     float mouse_x, mouse_y;
@@ -43,44 +44,11 @@ static void init(void) {
     if (!state.renderer) {
         fail(error);
     }
-    state.position[0] = state.map->posx / 1024.0f;
-    state.position[1] = -state.map->posz / 16384.0f;
-    state.position[2] = state.map->posy / 1024.0f;
-    state.yaw = state.map->ang * (6.28318530718f / 2048.0f);
+    duke_camera_init_from_map(&state.camera, state.map);
     duke_map_file_free(state.map);
     state.map = NULL;
     duke_grp_free(state.grp);
     state.grp = NULL;
-}
-/* Column-major perspective * view. Build angle zero looks along world +X;
- * positive Build Y is world +Z, so mouse-right agrees with the game. */
-static void camera(float out[16]) {
-    float cy = cosf(state.yaw), sy = sinf(state.yaw), cp = cosf(state.pitch),
-          sp = sinf(state.pitch);
-    float f[3] = {cy * cp, sp, sy * cp}, right[3] = {-sy, 0, cy},
-          up[3] = {-cy * sp, cp, -sy * sp};
-    float view[16] = {right[0], up[0], -f[0], 0, right[1], up[1], -f[1], 0,
-        right[2], up[2], -f[2], 0, 0,        0,     0,     1};
-    for (int i = 0; i < 3; i++) {
-        view[12] -= right[i] * state.position[i];
-        view[13] -= up[i] * state.position[i];
-        view[14] += f[i] * state.position[i];
-    }
-    float near = 0.01f, far = 512.0f, focal = 1.428148f;
-    float projection[16] = {0};
-    projection[0] = focal * sapp_heightf() / sapp_widthf();
-    projection[5] = focal;
-    projection[10] = (far + near) / (near - far);
-    projection[11] = -1;
-    projection[14] = 2 * far * near / (near - far);
-    for (int c = 0; c < 4; c++) {
-        for (int row = 0; row < 4; row++) {
-            out[c * 4 + row] = 0;
-            for (int k = 0; k < 4; k++) {
-                out[c * 4 + row] += projection[k * 4 + row] * view[c * 4 + k];
-            }
-        }
-    }
 }
 static void frame(void) {
     float dt = fmin(sapp_frame_duration(), 0.1);
@@ -88,20 +56,18 @@ static void frame(void) {
     float forward =
         (float)state.keys[SAPP_KEYCODE_W] - state.keys[SAPP_KEYCODE_S];
     float right = (float)state.keys[SAPP_KEYCODE_D] - state.keys[SAPP_KEYCODE_A];
-    float cy = cosf(state.yaw), sy = sinf(state.yaw);
     float length = hypotf(forward, right);
     if (length > 1) {
         forward /= length;
         right /= length;
     }
-    // Fly along the same forward vector used by the camera; strafing stays level.
-    float cp = cosf(state.pitch), sp = sinf(state.pitch);
-    state.position[0] += speed * (forward * cy * cp - right * sy);
-    state.position[1] += speed * forward * sp;
-    state.position[2] += speed * (forward * sy * cp + right * cy);
+    duke_camera_move(&state.camera, speed * forward, speed * right);
     if (sapp_width() > 0 && sapp_height() > 0) {
         float mvp[16];
-        camera(mvp);
+        if (!duke_camera_view_projection(&state.camera,
+                                         sapp_widthf() / sapp_heightf(), mvp)) {
+            fail("Invalid camera projection");
+        }
         /* Captured mouse look targets the center; otherwise follow the cursor. */
         if (sapp_mouse_locked()) {
             duke_renderer_set_pointer(state.renderer, 0, 0);
@@ -161,9 +127,8 @@ static void event(const sapp_event *e) {
         state.pointer_valid = false;
     }
     if (e->type == SAPP_EVENTTYPE_MOUSE_MOVE && sapp_mouse_locked()) {
-        state.yaw += e->mouse_dx * 0.003f;
-        state.pitch -= e->mouse_dy * 0.003f;
-        state.pitch = fmaxf(-1.5f, fminf(1.5f, state.pitch));
+        duke_camera_rotate(&state.camera, e->mouse_dx * 0.003f,
+                           -e->mouse_dy * 0.003f);
     }
     if (e->type == SAPP_EVENTTYPE_UNFOCUSED) {
         state.pointer_valid = false;

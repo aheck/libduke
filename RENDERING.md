@@ -127,3 +127,28 @@ shader orientation each draw. This increases persistent CPU memory. Picking uses
 the same approximate scene visibility as rendering; it does not add Build portal
 visibility or resolve overlapping-sector ambiguities. Perspective and orthographic
 matrices are supported; singular/nonfinite matrices yield no hover result.
+
+## Camera helper
+
+`libduke/camera.h` provides `DukeCamera` in the core library, including builds
+with rendering disabled. It needs no Sokol types or graphics context.
+
+```c
+DukeCamera camera;
+duke_camera_init_from_map(&camera, map);
+/* Host supplies radians and movement distances in renderer world units. */
+duke_camera_rotate(&camera, yaw_delta, pitch_delta);
+duke_camera_move(&camera, forward_distance, right_distance);
+float mvp[16];
+if (duke_camera_view_projection(&camera, viewport_width / (float)viewport_height, mvp)) {
+    /* Within the host's render pass: */
+    duke_renderer_draw(renderer, mvp);
+}
+```
+
+Defaults match duke-view: 70-degree vertical FOV, near/far distances 0.01/512,
+and pitch limited by the rotation helper to ±1.5 radians. Position, orientation,
+FOV and clipping distances are public fields. Forward motion follows pitch and
+right motion stays horizontal. The host handles diagonal input normalization,
+speed, timing, sensitivity and input bindings. The renderer continues accepting
+matrices from any camera implementation.

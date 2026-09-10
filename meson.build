@@ -15,6 +15,7 @@ math_dep = cc.find_library('m', required: false)
 libduke = both_libraries(
   'duke',
   'src/lib/art.c',
+  'src/lib/camera.c',
   'src/lib/glist.c',
   'src/lib/grp.c',
   'src/lib/input.c',
@@ -28,16 +29,19 @@ libduke = both_libraries(
 
 libduke_dep = declare_dependency(
   link_with: libduke,
+  dependencies: math_dep,
   include_directories: inc,
 )
 
 libduke_static_dep = declare_dependency(
   link_with: libduke.get_static_lib(),
+  dependencies: math_dep,
   include_directories: inc,
 )
 
 install_headers(
   'include/libduke/art.h',
+  'include/libduke/camera.h',
   'include/libduke/grp.h',
   'include/libduke/map.h',
   'include/libduke/palette.h',
@@ -162,3 +166,8 @@ if not get_option('renderer').disabled()
     c_args: ['-DSOKOL_DUMMY_BACKEND', '-UNDEBUG'])
   test('renderer', renderer_test)
 endif
+
+# Camera math is available even when the renderer is disabled.
+camera_test = executable('test-camera', 'tests/test_camera.c',
+  dependencies: [libduke_static_dep, math_dep], c_args: ['-UNDEBUG'])
+test('camera', camera_test)
