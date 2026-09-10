@@ -39,7 +39,7 @@ free-flight: no collision, gravity, game simulation or sprite interactions.
 1. Create/make current an OpenGL context and call `sg_setup` yourself. Use the
    supplied Sokol header and implementation exported by libduke-render; do not
    compile a second Sokol implementation. Provision image/view pools for the
-   number of distinct map tiles (the viewer uses 8192 each).
+   number of distinct map and sprite tiles (the viewer uses 8192 each).
 2. Load the map and GRP directory with libduke. Call `duke_renderer_create` with
    the color/depth formats and sample count of your intended render target.
    It snapshots geometry and textures; the map and archive can then be freed.
@@ -67,11 +67,15 @@ this is not an independent Sokol device per renderer.
 - Textured static walls, ceilings and floors with nearest-neighbor sampling.
 - Concave sector outlines and hole loops, triangulated by horizontal bands.
 - Slopes, portal upper/lower wall bands, and alpha-tested masked walls.
+- Face billboards and angle-oriented wall/floor sprites with repeats, ART and
+  sprite offsets, centering, flips, invisibility and one-sided rendering.
+- Translucent sprites use approximate 2/3 or 1/3 alpha, sorted back to front;
+  intersecting sprites can still exhibit sorting artifacts.
 - Basic UV scaling, panning, flips and approximate shade brightness.
 - Missing tiles use a magenta checkerboard; missing/invalid PALETTE.DAT fails.
 
 This is an inspection renderer, not an EDuke replacement. It does not yet render
-sprites, animated tiles, parallax skies, translucency, palette lookup variants,
+animated/directional actor frames, parallax skies, wall translucency, palette lookup variants,
 first-wall-relative floor UVs or exact wall alignment rules. It draws all sectors
 with a depth buffer rather than reproducing Build portal visibility, so overlapping
 rooms/effect sectors may differ from the game. Self-intersecting sector outlines

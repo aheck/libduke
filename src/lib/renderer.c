@@ -8,25 +8,31 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* Geometry is built once at creation; drawing only binds cached textures and
- * submits ranges from a single immutable vertex buffer. */
+/* Geometry is built once. Face-sprite offsets are oriented by the vertex
+ * shader; each frame only sorts blended draw ranges and binds cached resources.
+ */
 #define TILE_COUNT 6144
 #define VERTEX_LIMIT 8000000
 
 typedef struct Vertex {
     float p[3], uv[2], light;
+    float billboard[2], alpha;
 } Vertex;
 typedef struct Texture {
     sg_image image;
     sg_view view;
     int width, height;
+    int xoffset, yoffset;
 } Texture;
 typedef struct Draw {
     int first, count, tile;
+    bool sprite, translucent, one_sided;
+    float center[3], depth;
 } Draw;
 struct DukeRenderer {
     sg_shader shader;
     sg_pipeline pipeline;
+    sg_pipeline sprite_pipelines[4];
     sg_sampler sampler;
     sg_buffer buffer;
     /* The extra slot holds the checkerboard used for missing/invalid tiles. */
@@ -91,11 +97,12 @@ static bool source_load(Source *s, DukeGrpFile *grp) {
                 return false;
             }
             if (!duke_art_open_memory(art, data, size) ||
-                    !duke_art_read_tiles_sparse(art)) {
+                !duke_art_read_tiles_sparse(art)) {
                 duke_art_free(art);
                 return false;
             }
-            DukeArtFile **next = realloc(s->art, (s->count + 1) * sizeof(*next));
+            DukeArtFile **next =
+                realloc(s->art, (s->count + 1) * sizeof(*next));
             if (!next) {
                 duke_art_free(art);
                 return false;
@@ -111,10 +118,10 @@ static bool upload(Texture *t, int width, int height, const void *rgba) {
     t->width = width;
     t->height = height;
     t->image = sg_make_image(&(sg_image_desc){
-            .width = width,
-            .height = height,
-            .pixel_format = SG_PIXELFORMAT_RGBA8,
-            .data.mip_levels[0] = {rgba, (size_t)width * height * 4}});
+        .width = width,
+        .height = height,
+        .pixel_format = SG_PIXELFORMAT_RGBA8,
+        .data.mip_levels[0] = {rgba, (size_t)width * height * 4}});
     if (sg_query_image_state(t->image) != SG_RESOURCESTATE_VALID) {
         return false;
     }
@@ -154,10 +161,13 @@ static int texture(DukeRenderer *r, Source *s, int tile) {
             return -1;
         }
 
-        bool ok = duke_art_tile_to_rgba(a, pixels, size, s->palette, rgba, bytes) &&
+        bool ok =
+            duke_art_tile_to_rgba(a, pixels, size, s->palette, rgba, bytes) &&
             upload(t, a->width, a->height, rgba);
         free(rgba);
 
+        t->xoffset = (int8_t)(a->picanm >> 8);
+        t->yoffset = (int8_t)(a->picanm >> 16);
         return ok ? tile : -1;
     }
 
@@ -190,14 +200,15 @@ static bool emit(DukeRenderer *r, const Vertex v[6], int tile) {
         r->draws = p;
         r->draw_capacity = cap;
     }
-    r->draws[r->draw_count++] = (Draw){(int)r->count, 6, tile};
+    r->draws[r->draw_count++] =
+        (Draw){.first = (int)r->count, .count = 6, .tile = tile};
     memcpy(r->vertices + r->count, v, 6 * sizeof(*v));
     r->count += 6;
 
     return true;
 }
 static double surface(const DukeMapFile *m, int sector, bool floor, double x,
-        double y) {
+                      double y) {
     const DukeMapSector *s = m->sectors[sector];
     double z = floor ? s->floorz : s->ceilingz;
     /* Slope bit 2 makes heinum a gradient perpendicular to the sector's
@@ -209,7 +220,7 @@ static double surface(const DukeMapFile *m, int sector, bool floor, double x,
         double length = hypot(dx, dy);
         if (length > 0) {
             z += (floor ? s->floorheinum : s->ceilingheinum) *
-                (dx * (y - a->y) - dy * (x - a->x)) / (length * 256.0);
+                 (dx * (y - a->y) - dy * (x - a->x)) / (length * 256.0);
         }
     }
 
@@ -217,12 +228,15 @@ static double surface(const DukeMapFile *m, int sector, bool floor, double x,
 }
 
 static Vertex vertex(double x, double y, double z, double u, double v,
-        int shade) {
+                     int shade) {
     /* Build Z points down and uses 16 times as many units as X/Y. Map it
      * to renderer Y-up, with 1024 horizontal map units per world unit.
      * Shade is approximated as brightness rather than a palette lookup. */
     float light = fmaxf(0.15f, fminf(1.0f, 1.0f - shade / 32.0f));
-    return (Vertex){{x / 1024.0, -z / 16384.0, y / 1024.0}, {u, v}, light};
+    return (Vertex){.p = {x / 1024.0, -z / 16384.0, y / 1024.0},
+                    .uv = {u, v},
+                    .light = light,
+                    .alpha = 1};
 }
 
 static double edge_x(const DukeMapFile *m, int wall, double y) {
@@ -295,7 +309,8 @@ static bool floors(DukeRenderer *r, Source *src, const DukeMapFile *m, int id) {
                 edge_x(m, edges[k + 1].wall, hi), edge_x(m, edges[k].wall, hi)};
             double y[4] = {lo, lo, hi, hi};
             for (int floor = 0; floor < 2 && ok; floor++) {
-                int tile = texture(r, src, floor ? s->floorpicnum : s->ceilingpicnum);
+                int tile =
+                    texture(r, src, floor ? s->floorpicnum : s->ceilingpicnum);
                 if (tile < 0) {
                     ok = false;
                     break;
@@ -323,8 +338,9 @@ static bool floors(DukeRenderer *r, Source *src, const DukeMapFile *m, int id) {
                         (floor ? s->floorxpanning : s->ceilingxpanning) / 256.0;
                     v = v / (scale * t->height) +
                         (floor ? s->floorypanning : s->ceilingypanning) / 256.0;
-                    quad[j] = vertex(x[j], y[j], surface(m, id, floor, x[j], y[j]), u, v,
-                            floor ? s->floorshade : s->ceilingshade);
+                    quad[j] =
+                        vertex(x[j], y[j], surface(m, id, floor, x[j], y[j]), u,
+                               v, floor ? s->floorshade : s->ceilingshade);
                 }
                 const int order[6] = {0, 1, 2, 0, 2, 3};
                 for (int j = 0; j < 6; j++) {
@@ -341,7 +357,7 @@ static bool floors(DukeRenderer *r, Source *src, const DukeMapFile *m, int id) {
 }
 
 static bool wall_quad(DukeRenderer *r, Source *src, const DukeMapFile *m, int w,
-        double top[2], double bottom[2], int pic) {
+                      double top[2], double bottom[2], int pic) {
     /* Build heights increase downward. Empty spans need no geometry; if
      * only one end is closed, collapse that end rather than invert it. */
     if (bottom[0] <= top[0] && bottom[1] <= top[1]) {
@@ -362,16 +378,17 @@ static bool wall_quad(DukeRenderer *r, Source *src, const DukeMapFile *m, int w,
         /* Horizontal repeat spans the whole wall regardless of its length.
          * Vertical mapping is relative to this span's top at each endpoint. */
         double u = (end ? a->xrepeat * 8.0 : 0.0) / t->width +
-            a->xpanning / (double)t->width;
+                   a->xpanning / (double)t->width;
         double texv = (z - top[end]) * a->yrepeat / (2048.0 * t->height) +
-            a->ypanning / 256.0;
+                      a->ypanning / 256.0;
         if (a->cstat & 8) {
             u = -u;
         }
         if (a->cstat & 256) {
             texv = -texv;
         }
-        q[j] = vertex(end ? b->x : a->x, end ? b->y : a->y, z, u, texv, a->shade);
+        q[j] =
+            vertex(end ? b->x : a->x, end ? b->y : a->y, z, u, texv, a->shade);
     }
 
     const int order[6] = {0, 1, 2, 0, 2, 3};
@@ -388,7 +405,8 @@ static bool geometry(DukeRenderer *r, Source *src, const DukeMapFile *m) {
             return false;
         }
         const DukeMapSector *sector = m->sectors[s];
-        for (int w = sector->wallptr; w < sector->wallptr + sector->wallnum; w++) {
+        for (int w = sector->wallptr; w < sector->wallptr + sector->wallnum;
+             w++) {
             const DukeMapWall *a = m->walls[w], *b = m->walls[a->point2];
             /* Sample both sectors at each endpoint to preserve sloped
              * ceilings/floors along the shared wall. nt/nb belong to the
@@ -418,7 +436,7 @@ static bool geometry(DukeRenderer *r, Source *src, const DukeMapFile *m) {
                     lower[j] = fmax(top[j], fmin(bottom[j], nb[j]));
                 }
                 if (!wall_quad(r, src, m, w, top, upper, a->picnum) ||
-                        !wall_quad(r, src, m, w, lower, bottom, a->picnum)) {
+                    !wall_quad(r, src, m, w, lower, bottom, a->picnum)) {
                     return false;
                 }
                 /* Masked walls (bit 16) add an overlay across the opening.
@@ -435,30 +453,132 @@ static bool geometry(DukeRenderer *r, Source *src, const DukeMapFile *m) {
     return r->count > 0;
 }
 
+/* Sprite repeats scale ART pixels by 1/4 in horizontal Build coordinates.
+ * Vertical coordinates have 16x precision. Offsets include the signed ART
+ * animation pivot; face/wall sprites are bottom-anchored unless bit 128 is set.
+ */
+static bool sprite_quad(DukeRenderer *r, const DukeMapSprite *s, int tile) {
+    const Texture *t = &r->textures[tile];
+    int alignment = s->cstat & 48;
+    double angle = s->ang * (6.283185307179586 / 2048.0);
+    double rx = sin(angle), ry = -cos(angle);
+    double xoff = t->xoffset + s->xoffset, yoff = t->yoffset + s->yoffset;
+    if (s->cstat & 4) {
+        xoff = -xoff;
+    }
+    if (s->cstat & 8) {
+        yoff = -yoff;
+    }
+    Vertex q[4], v[6];
+    for (int j = 0; j < 4; j++) {
+        bool right = j == 1 || j == 2, bottom = j >= 2;
+        double u = right ? 1 : 0, texv = bottom ? 1 : 0;
+        double x = (u * t->width - t->width * 0.5 - xoff) * s->xrepeat / 4.0;
+        double y =
+            (texv * t->height - t->height * 0.5 - yoff) * s->yrepeat / 4.0;
+        double z = s->z;
+        if (alignment != 32) {
+            z += ((texv - 1) * t->height - yoff +
+                  ((s->cstat & 128) ? t->height * 0.5 : 0)) *
+                 s->yrepeat * 4.0;
+        }
+        if (s->cstat & 4) {
+            u = 1 - u;
+        }
+        if (s->cstat & 8) {
+            texv = 1 - texv;
+        }
+        if (alignment == 0) {
+            q[j] = vertex(s->x, s->y, s->z, u, texv, s->shade);
+            q[j].billboard[0] = x / 1024.0;
+            q[j].billboard[1] = -(z - s->z) / 16384.0;
+        } else if (alignment == 16) {
+            q[j] = vertex(s->x + rx * x, s->y + ry * x, z, u, texv, s->shade);
+        } else {
+            q[j] = vertex(s->x + rx * x - ry * y, s->y + ry * x + rx * y, z, u,
+                          texv, s->shade);
+        }
+        q[j].alpha = (s->cstat & 2)
+                         ? ((s->cstat & 512) ? 1.0f / 3.0f : 2.0f / 3.0f)
+                         : 1.0f;
+    }
+    /* Front faces: wall sprites face along their Build angle;
+     * floor sprites face up, or down when Y-flipped. */
+    bool reverse = alignment != 32 || !(s->cstat & 8);
+    const int order[6] = {0, 1, 2, 0, 2, 3};
+    for (int j = 0; j < 6; j++) {
+        v[j] = q[order[reverse ? (j / 3 * 3 + 2 - j % 3) : j]];
+    }
+    if (!emit(r, v, tile)) {
+        return false;
+    }
+    Draw *d = &r->draws[r->draw_count - 1];
+    d->sprite = true;
+    d->translucent = (s->cstat & 2) != 0;
+    d->one_sided = alignment != 0 && (s->cstat & 64) != 0;
+    d->center[0] = s->x / 1024.0f;
+    d->center[1] = -s->z / 16384.0f;
+    d->center[2] = s->y / 1024.0f;
+    return true;
+}
+static bool sprites(DukeRenderer *r, Source *src, const DukeMapFile *m) {
+    for (int i = 0; i < m->numsprites; i++) {
+        const DukeMapSprite *s = m->sprites[i];
+        if ((s->cstat & 32768) || !s->xrepeat || !s->yrepeat ||
+            (s->cstat & 48) == 48 || s->sectnum < 0 ||
+            s->sectnum >= m->numsectors || s->statnum == MAP_MAXSTATUS) {
+            continue;
+        }
+        int tile = texture(r, src, s->picnum);
+        if (tile < 0 || !sprite_quad(r, s, tile)) {
+            return false;
+        }
+    }
+    return true;
+}
+static int compare_draw(const void *a, const void *b) {
+    const Draw *x = a, *y = b;
+    if (x->translucent != y->translucent) {
+        return x->translucent ? 1 : -1;
+    }
+    if (x->translucent && x->depth != y->depth) {
+        return x->depth < y->depth ? 1 : -1;
+    }
+    return (x->first > y->first) - (x->first < y->first);
+}
+
 static bool pipeline(DukeRenderer *r, const DukeRendererDesc *desc) {
     sg_shader_desc sh = {0};
     sh.vertex_func.source =
-        "#version 410\nlayout(location=0) in vec3 position;layout(location=1) in "
-        "vec2 texcoord;layout(location=2) in float light;uniform mat4 mvp;out "
-        "vec2 uv;out float brightness;void "
-        "main(){gl_Position=mvp*vec4(position,1);uv=texcoord;brightness=light;}";
-    /* Alpha is a binary cutout here: surviving fragments are opaque and
-     * write depth. This pipeline does not blend translucent surfaces. */
+        "#version 410\nlayout(location=0) in vec3 position;layout(location=1) "
+        "in vec2 texcoord;"
+        "layout(location=2) in float light;layout(location=3) in vec2 "
+        "billboard;"
+        "layout(location=4) in float opacity;uniform mat4 mvp;out vec2 uv;out "
+        "float brightness;out float alpha;"
+        "void main(){vec2 "
+        "r=vec2(mvp[0][0],mvp[2][0]);r=length(r)>0.00001?normalize(r):vec2(1,0)"
+        ";"
+        "vec3 p=position+vec3(r.x*billboard.x,billboard.y,r.y*billboard.x);"
+        "gl_Position=mvp*vec4(p,1);uv=texcoord;brightness=light;alpha=opacity;"
+        "}";
     sh.fragment_func.source =
-        "#version 410\nuniform sampler2D tex;in vec2 uv;in float brightness;out "
-        "vec4 frag;void main(){vec4 "
-        "c=texture(tex,uv);if(c.a<0.5)discard;frag=vec4(c.rgb*brightness,1);}";
+        "#version 410\nuniform sampler2D tex;in vec2 uv;in float brightness;in "
+        "float alpha;out vec4 frag;"
+        "void main(){vec4 "
+        "c=texture(tex,uv);if(c.a<0.5)discard;frag=vec4(c.rgb*brightness,alpha)"
+        ";}";
     sh.uniform_blocks[0] = (sg_shader_uniform_block){
         .stage = SG_SHADERSTAGE_VERTEX,
         .size = 64,
         .glsl_uniforms[0] = {.type = SG_UNIFORMTYPE_MAT4, .glsl_name = "mvp"}};
     sh.views[0].texture =
         (sg_shader_texture_view){.stage = SG_SHADERSTAGE_FRAGMENT,
-            .image_type = SG_IMAGETYPE_2D,
-            .sample_type = SG_IMAGESAMPLETYPE_FLOAT};
+                                 .image_type = SG_IMAGETYPE_2D,
+                                 .sample_type = SG_IMAGESAMPLETYPE_FLOAT};
     sh.samplers[0] =
         (sg_shader_sampler){.stage = SG_SHADERSTAGE_FRAGMENT,
-            .sampler_type = SG_SAMPLERTYPE_FILTERING};
+                            .sampler_type = SG_SAMPLERTYPE_FILTERING};
     sh.texture_sampler_pairs[0] = (sg_shader_texture_sampler_pair){
         .stage = SG_SHADERSTAGE_FRAGMENT, .glsl_name = "tex"};
     r->shader = sg_make_shader(&sh);
@@ -466,30 +586,49 @@ static bool pipeline(DukeRenderer *r, const DukeRendererDesc *desc) {
         return false;
     }
     sg_pipeline_desc p = {.shader = r->shader,
-        .depth = {.pixel_format = desc->depth_format,
-            .compare = SG_COMPAREFUNC_LESS_EQUAL,
-            .write_enabled = true},
-        .sample_count = desc->sample_count};
+                          .depth = {.pixel_format = desc->depth_format,
+                                    .compare = SG_COMPAREFUNC_LESS_EQUAL,
+                                    .write_enabled = true},
+                          .sample_count = desc->sample_count};
     p.colors[0].pixel_format = desc->color_format;
     p.layout.attrs[0].format = SG_VERTEXFORMAT_FLOAT3;
     p.layout.attrs[1].format = SG_VERTEXFORMAT_FLOAT2;
     p.layout.attrs[2].format = SG_VERTEXFORMAT_FLOAT;
+    p.layout.attrs[3].format = SG_VERTEXFORMAT_FLOAT2;
+    p.layout.attrs[4].format = SG_VERTEXFORMAT_FLOAT;
     r->pipeline = sg_make_pipeline(&p);
+    for (int i = 0; i < 4; i++) {
+        bool translucent = (i & 1) != 0;
+        p.depth.write_enabled = !translucent;
+        p.cull_mode = (i & 2) ? SG_CULLMODE_BACK : SG_CULLMODE_NONE;
+        p.face_winding = SG_FACEWINDING_CCW;
+        p.colors[0].blend = (sg_blend_state){
+            .enabled = translucent,
+            .src_factor_rgb = SG_BLENDFACTOR_SRC_ALPHA,
+            .dst_factor_rgb = SG_BLENDFACTOR_ONE_MINUS_SRC_ALPHA,
+            .src_factor_alpha = SG_BLENDFACTOR_ONE,
+            .dst_factor_alpha = SG_BLENDFACTOR_ONE_MINUS_SRC_ALPHA};
+        r->sprite_pipelines[i] = sg_make_pipeline(&p);
+        if (sg_query_pipeline_state(r->sprite_pipelines[i]) !=
+            SG_RESOURCESTATE_VALID) {
+            return false;
+        }
+    }
     /* Nearest sampling preserves ART pixels; repeats support UVs outside
      * [0, 1] from wall repeats and world-aligned floor/ceiling coordinates. */
     r->sampler =
         sg_make_sampler(&(sg_sampler_desc){.min_filter = SG_FILTER_NEAREST,
-                .mag_filter = SG_FILTER_NEAREST,
-                .wrap_u = SG_WRAP_REPEAT,
-                .wrap_v = SG_WRAP_REPEAT});
+                                           .mag_filter = SG_FILTER_NEAREST,
+                                           .wrap_u = SG_WRAP_REPEAT,
+                                           .wrap_v = SG_WRAP_REPEAT});
 
     return sg_query_pipeline_state(r->pipeline) == SG_RESOURCESTATE_VALID &&
-        sg_query_sampler_state(r->sampler) == SG_RESOURCESTATE_VALID;
+           sg_query_sampler_state(r->sampler) == SG_RESOURCESTATE_VALID;
 }
 
 DukeRenderer *duke_renderer_create(DukeMapFile *map, DukeGrpFile *grp,
-        const DukeRendererDesc *desc, char *error,
-        size_t error_size) {
+                                   const DukeRendererDesc *desc, char *error,
+                                   size_t error_size) {
     const char *message = "Invalid renderer arguments or graphics context";
     DukeRenderer *r = NULL;
     Source src = {0};
@@ -500,7 +639,7 @@ DukeRenderer *duke_renderer_create(DukeMapFile *map, DukeGrpFile *grp,
         goto fail;
     }
     if (sg_query_backend() != SG_BACKEND_GLCORE &&
-            sg_query_backend() != SG_BACKEND_DUMMY) {
+        sg_query_backend() != SG_BACKEND_DUMMY) {
         message = "Renderer currently requires the OpenGL backend";
         goto fail;
     }
@@ -520,11 +659,11 @@ DukeRenderer *duke_renderer_create(DukeMapFile *map, DukeGrpFile *grp,
     /* Create the fallback before tessellation, which may reference it and
      * lazily upload every real tile needed by the generated surfaces. */
     const uint8_t checker[16] = {255, 0,  255, 255, 20,  20, 20,  255,
-        20,  20, 20,  255, 255, 0,  255, 255};
+                                 20,  20, 20,  255, 255, 0,  255, 255};
     message = "Unable to create textures or sector geometry (check Sokol "
-        "resource pools)";
+              "resource pools)";
     if (!upload(&r->textures[TILE_COUNT], 2, 2, checker) ||
-            !geometry(r, &src, map)) {
+        !geometry(r, &src, map) || !sprites(r, &src, map)) {
         goto fail;
     }
     message = "Unable to create renderer GPU pipeline/buffer";
@@ -532,7 +671,7 @@ DukeRenderer *duke_renderer_create(DukeMapFile *map, DukeGrpFile *grp,
         goto fail;
     }
     r->buffer = sg_make_buffer(
-            &(sg_buffer_desc){.data = {r->vertices, r->count * sizeof(Vertex)}});
+        &(sg_buffer_desc){.data = {r->vertices, r->count * sizeof(Vertex)}});
     if (sg_query_buffer_state(r->buffer) != SG_RESOURCESTATE_VALID) {
         goto fail;
     }
@@ -561,13 +700,30 @@ void duke_renderer_draw(DukeRenderer *r, const float mvp[16]) {
     /* The host may issue graphics calls between frames. Invalidate Sokol
      * cached bindings so this draw reapplies the state it depends on. */
     sg_reset_state_cache();
-    sg_apply_pipeline(r->pipeline);
-    sg_apply_uniforms(0, &(sg_range){mvp, 16 * sizeof(float)});
+    /* Opaque geometry first; blended sprites back-to-front, with depth testing
+     * but no depth writes. Sorting centers is an approximation for
+     * intersections. */
+    for (size_t i = 0; i < r->draw_count; i++) {
+        Draw *d = &r->draws[i];
+        d->depth = mvp[3] * d->center[0] + mvp[7] * d->center[1] +
+                   mvp[11] * d->center[2] + mvp[15];
+    }
+    qsort(r->draws, r->draw_count, sizeof(*r->draws), compare_draw);
+    sg_pipeline current = {0};
     for (size_t i = 0; i < r->draw_count; i++) {
         Draw d = r->draws[i];
+        sg_pipeline selected =
+            d.sprite ? r->sprite_pipelines[(d.translucent ? 1 : 0) |
+                                           (d.one_sided ? 2 : 0)]
+                     : r->pipeline;
+        if (selected.id != current.id) {
+            sg_apply_pipeline(selected);
+            sg_apply_uniforms(0, &(sg_range){mvp, 16 * sizeof(float)});
+            current = selected;
+        }
         sg_bindings b = {.vertex_buffers[0] = r->buffer,
-            .views[0] = r->textures[d.tile].view,
-            .samplers[0] = r->sampler};
+                         .views[0] = r->textures[d.tile].view,
+                         .samplers[0] = r->sampler};
         sg_apply_bindings(&b);
         sg_draw(d.first, d.count, 1);
     }
@@ -582,6 +738,11 @@ void duke_renderer_destroy(DukeRenderer *r) {
     }
     if (r->pipeline.id) {
         sg_destroy_pipeline(r->pipeline);
+    }
+    for (int i = 0; i < 4; i++) {
+        if (r->sprite_pipelines[i].id) {
+            sg_destroy_pipeline(r->sprite_pipelines[i]);
+        }
     }
     if (r->shader.id) {
         sg_destroy_shader(r->shader);
