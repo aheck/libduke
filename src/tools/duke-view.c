@@ -92,10 +92,11 @@ static void frame(void) {
         forward /= length;
         right /= length;
     }
-    state.position[0] += speed * (forward * cy - right * sy);
-    state.position[2] += speed * (forward * sy + right * cy);
-    state.position[1] +=
-        speed * ((float)state.keys[SAPP_KEYCODE_E] - state.keys[SAPP_KEYCODE_Q]);
+    // Fly along the same forward vector used by the camera; strafing stays level.
+    float cp = cosf(state.pitch), sp = sinf(state.pitch);
+    state.position[0] += speed * (forward * cy * cp - right * sy);
+    state.position[1] += speed * forward * sp;
+    state.position[2] += speed * (forward * sy * cp + right * cy);
     if (sapp_width() > 0 && sapp_height() > 0) {
         float mvp[16];
         camera(mvp);
@@ -148,7 +149,7 @@ static void cleanup(void) {
 
 sapp_desc sokol_main(int argc, char **argv) {
     if (argc == 2 && (!strcmp(argv[1], "--help") || !strcmp(argv[1], "-h"))) {
-        puts("Usage: duke-view MAP GRP [--frames N]\nWASD: move | Q/E: down/up | "
+        puts("Usage: duke-view MAP GRP [--frames N]\nW/S: fly along view | A/D: strafe | "
                 "Shift: faster | Click: mouse look | Esc: release mouse/quit\nStatic "
                 "free-flight viewer; no collision or game simulation.");
         exit(EXIT_SUCCESS);

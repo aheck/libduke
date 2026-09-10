@@ -28,7 +28,8 @@ Linux is the currently tested platform; Windows and macOS still need validation.
 The default build leaves both options disabled. Renderer-only builds do not
 require window/input dependencies.
 
-Controls: WASD moves horizontally, Q/E moves down/up, Shift increases speed.
+Controls: W/S flies forward/backward along the look direction, including pitch.
+A/D strafes horizontally, and Shift increases speed.
 Click to capture the mouse for look; Escape releases it, then exits. Losing focus
 releases input. Navigation starts at the map's player position and angle and is
 free-flight: no collision, gravity, game simulation or sprite interactions.
