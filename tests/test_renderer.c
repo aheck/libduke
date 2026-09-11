@@ -222,6 +222,24 @@ static void hover_tests(void) {
     }
     update_hover(r, identity);
     assert(duke_renderer_get_hovered_surface(r, &hit) && hit.wall_index == 2);
+    duke_renderer_set_sprite_picking_enabled(r, true);
+    assert(!duke_renderer_get_hovered_surface(r, &hit));
+    r->draws[0].sprite_index = 37;
+    update_hover(r, identity);
+    assert(duke_renderer_get_hovered_surface(r, &hit));
+    assert(hit.kind == DUKE_SURFACE_SPRITE && hit.sprite_index == 37 &&
+           hit.wall_index == -1);
+    assert(highlighted(r, &r->draws[0]) && !highlighted(r, &r->draws[1]));
+    memset(r->textures[0].alpha, 0, 4);
+    update_hover(r, identity);
+    assert(duke_renderer_get_hovered_surface(r, &hit) && hit.wall_index == 2 &&
+           hit.sprite_index == -1);
+    memset(r->textures[0].alpha, 255, 4);
+    duke_renderer_set_sprite_picking_enabled(r, false);
+    assert(!duke_renderer_get_hovered_surface(r, &hit));
+    update_hover(r, identity);
+    assert(duke_renderer_get_hovered_surface(r, &hit) && hit.wall_index == 2);
+    duke_renderer_set_sprite_picking_enabled(r, true);
     /* One-sided CCW plane viewed from behind should not occlude. */
     r->draws[0].translucent = false;
     r->draws[0].one_sided = true;
@@ -280,8 +298,58 @@ static void hover_tests(void) {
     assert(fabs(ray_o[2] + 0.1) < 1e-6 && fabs(ray_d[2] + 1) < 1e-6);
 }
 
+static void bottom_swap_tests(void) {
+    const int xy[][2] = {{0, 0}, {1024, 0}, {1024, 1024}, {0, 1024}};
+    DukeMapFile *m = fixture(xy, 4, 0);
+    DukeMapWall *a = m->walls[0], *other = m->walls[2];
+    a->nextwall = 2;
+    a->nextsector = 0;
+    a->picnum = 10;
+    a->xrepeat = 8;
+    a->yrepeat = 16;
+    other->picnum = 11;
+    other->xrepeat = 99;
+    other->yrepeat = 99;
+    other->xpanning = 16;
+    other->ypanning = 64;
+    other->shade = 12;
+    other->cstat = 4 | 8 | 256;
+    DukeRenderer *r = calloc(1, sizeof(*r));
+    assert(r);
+    Source src = {0};
+    uint32_t pixels[64 * 64] = {0};
+    assert(upload(&r->textures[10], 64, 64, pixels));
+    assert(upload(&r->textures[11], 64, 64, pixels));
+    double top[2] = {-8192, -4096}, bottom[2] = {0, 0};
+    /* Toggle the flag on identical geometry, including a sloping top edge.
+     * Upper/masked/solid spans must never borrow the opposite material. */
+    assert(wall_quad(r, &src, m, 0, 0, top, bottom, 10, true));
+    assert(r->draws[0].tile == 10);
+    a->cstat = 2;
+    assert(wall_quad(r, &src, m, 0, 0, top, bottom, 10, true));
+    assert(r->draws[1].tile == 11 && r->draws[1].wall == 0 && r->draws[1].sector == 0);
+    for (int i = 0; i < 6; i++) {
+        assert(memcmp(r->vertices[i].p, r->vertices[i + 6].p, sizeof(r->vertices[i].p)) == 0);
+    }
+    assert(fabs(r->vertices[6].uv[0] - 0.25) < 1e-6);
+    assert(fabs(r->vertices[7].uv[0] - 1.25) < 1e-6);
+    assert(fabs(r->vertices[6].uv[1] + 1.25) < 1e-6);
+    assert(r->vertices[6].light < r->vertices[0].light);
+    assert(wall_quad(r, &src, m, 0, 0, top, bottom, 10, false));
+    assert(r->draws[2].tile == 10);
+    a->cstat |= 8;
+    assert(wall_quad(r, &src, m, 0, 0, top, bottom, 10, true));
+    assert(fabs(r->vertices[19].uv[0] + 1.25) < 1e-6);
+    a->nextwall = -1;
+    assert(wall_quad(r, &src, m, 0, 0, top, bottom, 10, true));
+    assert(r->draws[4].tile == 10);
+    duke_renderer_destroy(r);
+    duke_map_file_free(m);
+}
+
 int main(void) {
     sg_setup(&(sg_desc){0});
+    bottom_swap_tests();
     sprite_tests();
     hover_tests();
     const int ring[][2] = {{0, 0},       {4096, 0},    {4096, 4096},

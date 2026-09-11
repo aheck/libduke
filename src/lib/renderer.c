@@ -30,7 +30,7 @@ typedef struct Draw {
     bool sprite, translucent, one_sided;
     float center[3], depth;
     DukeSurfaceKind surface;
-    int sector, wall;
+    int sector, wall, sprite_index;
 } Draw;
 typedef struct PickFace {
     Draw draw;
@@ -44,7 +44,7 @@ struct DukeRenderer {
     PickFace *faces;
     PickNode *nodes;
     int face_count, node_count;
-    bool hover_enabled, pointer_valid;
+    bool hover_enabled, pointer_valid, sprite_picking;
     float pointer[2];
     DukeSurfaceHit hit;
     sg_shader shader;
@@ -389,20 +389,28 @@ static bool floors(DukeRenderer *r, Source *src, const DukeMapFile *m, int id) {
 
 static bool wall_quad(DukeRenderer *r, Source *src, const DukeMapFile *m,
                       int sector, int w, double top[2], double bottom[2],
-                      int pic) {
+                      int pic, bool lower_band) {
     /* Build heights increase downward. Empty spans need no geometry; if
      * only one end is closed, collapse that end rather than invert it. */
     if (bottom[0] <= top[0] && bottom[1] <= top[1]) {
         return true;
     }
 
+    const DukeMapWall *a = m->walls[w], *b = m->walls[a->point2];
+    /* Bottom swap borrows appearance, not geometry or repeat values. Build's
+     * horizontal flip also remains on the visible wall. */
+    const DukeMapWall *material = a;
+    if (lower_band && (a->cstat & 2) && a->nextwall >= 0 &&
+        a->nextwall < m->numwalls) {
+        material = m->walls[a->nextwall];
+        pic = material->picnum;
+    }
     int tile = texture(r, src, pic);
     if (tile < 0) {
         return false;
     }
 
     const Texture *t = &r->textures[tile];
-    const DukeMapWall *a = m->walls[w], *b = m->walls[a->point2];
     Vertex q[4], v[6];
     for (int j = 0; j < 4; j++) {
         int end = (j == 1 || j == 2);
@@ -410,17 +418,24 @@ static bool wall_quad(DukeRenderer *r, Source *src, const DukeMapFile *m,
         /* Horizontal repeat spans the whole wall regardless of its length.
          * Vertical mapping is relative to this span's top at each endpoint. */
         double u = (end ? a->xrepeat * 8.0 : 0.0) / t->width +
-                   a->xpanning / (double)t->width;
-        double texv = (z - top[end]) * a->yrepeat / (2048.0 * t->height) +
-                      a->ypanning / 256.0;
+                   material->xpanning / (double)t->width;
+        double origin = top[end];
+        if (lower_band) {
+            /* Lower bands align to the neighbor floor by default; bit 4
+             * instead anchors them at the visible sector's ceiling. */
+            origin = (material->cstat & 4) ? m->sectors[sector]->ceilingz
+                                           : m->sectors[a->nextsector]->floorz;
+        }
+        double texv = (z - origin) * a->yrepeat / (2048.0 * t->height) +
+                      material->ypanning / 256.0;
         if (a->cstat & 8) {
             u = -u;
         }
-        if (a->cstat & 256) {
+        if (material->cstat & 256) {
             texv = -texv;
         }
         q[j] =
-            vertex(end ? b->x : a->x, end ? b->y : a->y, z, u, texv, a->shade);
+            vertex(end ? b->x : a->x, end ? b->y : a->y, z, u, texv, material->shade);
     }
 
     const int order[6] = {0, 1, 2, 0, 2, 3};
@@ -463,7 +478,7 @@ static bool geometry(DukeRenderer *r, Source *src, const DukeMapFile *m) {
             /* Solid boundaries and one-way walls (bit 32) cover the full
              * sector height. Portals leave the overlapping opening clear. */
             if (a->nextsector < 0 || (a->cstat & 32)) {
-                if (!wall_quad(r, src, m, s, w, top, bottom, a->picnum)) {
+                if (!wall_quad(r, src, m, s, w, top, bottom, a->picnum, false)) {
                     return false;
                 }
             } else {
@@ -474,15 +489,15 @@ static bool geometry(DukeRenderer *r, Source *src, const DukeMapFile *m) {
                     upper[j] = fmin(bottom[j], fmax(top[j], nt[j]));
                     lower[j] = fmax(top[j], fmin(bottom[j], nb[j]));
                 }
-                if (!wall_quad(r, src, m, s, w, top, upper, a->picnum) ||
-                    !wall_quad(r, src, m, s, w, lower, bottom, a->picnum)) {
+                if (!wall_quad(r, src, m, s, w, top, upper, a->picnum, false) ||
+                    !wall_quad(r, src, m, s, w, lower, bottom, a->picnum, true)) {
                     return false;
                 }
                 /* Masked walls (bit 16) add an overlay across the opening.
                  * Transparent texels are discarded by the fragment shader. */
                 if (a->cstat & 16) {
                     if (!wall_quad(r, src, m, s, w, upper, lower,
-                                   a->overpicnum)) {
+                                   a->overpicnum, false)) {
                         return false;
                     }
                 }
@@ -573,6 +588,11 @@ static bool sprites(DukeRenderer *r, Source *src, const DukeMapFile *m) {
         if (tile < 0 || !sprite_quad(r, s, tile)) {
             return false;
         }
+        Draw *d = &r->draws[r->draw_count - 1];
+        d->surface = DUKE_SURFACE_SPRITE;
+        d->sector = s->sectnum;
+        d->wall = -1;
+        d->sprite_index = i;
     }
     return true;
 }
@@ -588,8 +608,10 @@ static int compare_draw(const void *a, const void *b) {
 }
 
 static DukeSurfaceHit no_hit(void) {
-    return (DukeSurfaceHit){
-        .kind = DUKE_SURFACE_NONE, .sector_index = -1, .wall_index = -1};
+    return (DukeSurfaceHit){.kind = DUKE_SURFACE_NONE,
+                            .sector_index = -1,
+                            .wall_index = -1,
+                            .sprite_index = -1};
 }
 void duke_renderer_set_hover_enabled(DukeRenderer *r, bool enabled) {
     if (r) {
@@ -597,6 +619,12 @@ void duke_renderer_set_hover_enabled(DukeRenderer *r, bool enabled) {
         if (!enabled) {
             r->hit = no_hit();
         }
+    }
+}
+void duke_renderer_set_sprite_picking_enabled(DukeRenderer *r, bool enabled) {
+    if (r) {
+        r->sprite_picking = enabled;
+        r->hit = no_hit();
     }
 }
 void duke_renderer_set_pointer(DukeRenderer *r, float x, float y) {
@@ -786,7 +814,7 @@ static bool ray_box(const PickNode *n, const double o[3], const double dir[3],
 }
 static void pick_draw(DukeRenderer *r, const Draw *d, const float mvp[16],
                       const double o[3], const double dir[3], double *nearest) {
-    if (d->sprite && d->translucent) {
+    if (d->sprite && d->translucent && !r->sprite_picking) {
         return;
     }
     double rx = mvp[0], rz = mvp[8], length = hypot(rx, rz);
@@ -838,10 +866,11 @@ static void pick_draw(DukeRenderer *r, const Draw *d, const float mvp[16],
         }
         *nearest = distance;
         r->hit = no_hit();
-        if (!d->sprite) {
-            r->hit.kind = d->surface;
+        if (!d->sprite || r->sprite_picking) {
+            r->hit.kind = d->sprite ? DUKE_SURFACE_SPRITE : d->surface;
             r->hit.sector_index = d->sector;
-            r->hit.wall_index = d->wall;
+            r->hit.wall_index = d->sprite ? -1 : d->wall;
+            r->hit.sprite_index = d->sprite ? d->sprite_index : -1;
             r->hit.distance = distance;
             for (int k = 0; k < 3; k++) {
                 r->hit.position[k] = o[k] + dir[k] * distance;
@@ -883,7 +912,12 @@ static void update_hover(DukeRenderer *r, const float m[16]) {
     }
 }
 static bool highlighted(const DukeRenderer *r, const Draw *d) {
-    return r->hover_enabled && r->hit.kind != DUKE_SURFACE_NONE && !d->sprite &&
+    if (d->sprite) {
+        return r->hover_enabled && r->sprite_picking &&
+               r->hit.kind == DUKE_SURFACE_SPRITE &&
+               r->hit.sprite_index == d->sprite_index;
+    }
+    return r->hover_enabled && r->hit.kind != DUKE_SURFACE_NONE &&
            d->surface == r->hit.kind && d->sector == r->hit.sector_index &&
            d->wall == r->hit.wall_index;
 }

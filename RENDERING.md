@@ -71,6 +71,10 @@ this is not an independent Sokol device per renderer.
 - Textured static walls, ceilings and floors with nearest-neighbor sampling.
 - Concave sector outlines and hole loops, triangulated by horizontal bands.
 - Slopes, portal upper/lower wall bands, and alpha-tested masked walls.
+- Bottom texture swap (wall cstat 2): lower bands borrow the opposite wall’s
+  texture, panning, shade and vertical alignment/flip. Repeats and horizontal
+  flip remain on the visible wall, as do hover/picking IDs. Palette lookup
+  variants remain unsupported.
 - Face billboards and angle-oriented wall/floor sprites with repeats, ART and
   sprite offsets, centering, flips, invisibility and one-sided rendering.
 - Translucent sprites use approximate 2/3 or 1/3 alpha, sorted back to front;
@@ -152,3 +156,12 @@ FOV and clipping distances are public fields. Forward motion follows pitch and
 right motion stays horizontal. The host handles diagonal input normalization,
 speed, timing, sensitivity and input bindings. The renderer continues accepting
 matrices from any camera implementation.
+
+### Sprite picking
+
+Call `duke_renderer_set_sprite_picking_enabled(renderer, true)` alongside hover
+highlighting to select visible sprites. Hits return `DUKE_SURFACE_SPRITE`, a
+`sprite_index`, the sprite's `sector_index`, and `wall_index = -1`. This includes
+translucent sprites, but respects transparent pixels and one-sided backfaces.
+The default is off, retaining the surface-only picking behavior. Recompile
+callers against the updated header because `DukeSurfaceHit` has a new field.

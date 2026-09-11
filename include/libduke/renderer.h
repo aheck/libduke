@@ -8,13 +8,14 @@ extern "C" {
 #endif
 
 typedef struct DukeRenderer DukeRenderer;
-/** @brief Type of hovered map surface; sprites occlude but are not selectable.
+/** @brief Type of hovered map element; sprite selection is opt-in.
  */
 typedef enum DukeSurfaceKind {
     DUKE_SURFACE_NONE,
     DUKE_SURFACE_WALL,
     DUKE_SURFACE_FLOOR,
-    DUKE_SURFACE_CEILING
+    DUKE_SURFACE_CEILING,
+    DUKE_SURFACE_SPRITE
 } DukeSurfaceKind;
 /** @brief Surface identity in the renderer's map snapshot, plus world-space
  * hit. */
@@ -25,6 +26,7 @@ typedef struct DukeSurfaceHit {
                        floors/ceilings. */
     float position[3];
     float distance; /* World units from the pointer ray's near-plane origin. */
+    int sprite_index; /* Snapshot sprite index, or -1 for map surfaces. */
 } DukeSurfaceHit;
 /**
  * @brief Enable or disable pointer picking and surface tinting (default
@@ -33,6 +35,17 @@ typedef struct DukeSurfaceHit {
  * data.
  */
 void duke_renderer_set_hover_enabled(DukeRenderer *renderer, bool enabled);
+/**
+ * @brief Include visible sprites in hover picking and highlighting.
+ * Disabled by default: opaque sprites then occlude surface hits and translucent
+ * sprites are skipped. When enabled, both opaque and translucent sprites can
+ * return DUKE_SURFACE_SPRITE with sprite_index and sector_index; wall_index is
+ * -1. Transparent texels and backfaces of one-sided sprites remain unpickable.
+ * Requires hover to be enabled. Call between draws on the graphics thread.
+ * Changing this option clears the previous hit. NULL is a no-op.
+ */
+void duke_renderer_set_sprite_picking_enabled(DukeRenderer *renderer,
+                                              bool enabled);
 /**
  * @brief Set pointer coordinates relative to the host's rendering viewport.
  * X spans -1 (left) to +1 (right); Y spans -1 (bottom) to +1 (top).
