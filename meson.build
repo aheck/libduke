@@ -132,7 +132,7 @@ if not get_option('renderer').disabled()
   else
     error('The initial renderer supports desktop OpenGL on Linux, Windows and macOS')
   endif
-  renderer_lib = library('duke-render', ['src/lib/renderer.c', 'src/lib/sokol.c'],
+  renderer_lib = both_libraries('duke-render', ['src/lib/renderer.c', 'src/lib/sokol.c'],
     include_directories: [inc, sokol_inc], dependencies: renderer_deps,
     c_args: backend_args, install: true)
   renderer_dep = declare_dependency(link_with: renderer_lib,
