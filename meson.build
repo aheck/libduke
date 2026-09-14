@@ -69,52 +69,56 @@ duke_art_tool = executable(
   install: true,
 )
 
-# Conan's PkgConfigDeps generates check.pc for us.
-check_dep = dependency('check')
+# Disabled builds do not search for Check or build/register its test executables.
+if get_option('check_tests')
+  # Conan's PkgConfigDeps generates check.pc for us.
+  check_dep = dependency('check')
 
-test_grp = executable(
-  'test-grp',
-  'tests/test_grp.c',
-  dependencies: [
-    libduke_dep,
-    check_dep,
-  ],
-)
+  test_grp = executable(
+    'test-grp',
+    'tests/test_grp.c',
+    dependencies: [
+      libduke_dep,
+      check_dep,
+    ],
+  )
 
-test('grp', test_grp)
+  test('grp', test_grp)
 
-test_art = executable(
-  'test-art',
-  'tests/test_art.c',
-  dependencies: [
-    libduke_dep,
-    check_dep,
-  ],
-)
+  test_art = executable(
+    'test-art',
+    'tests/test_art.c',
+    dependencies: [
+      libduke_dep,
+      check_dep,
+    ],
+  )
 
-test('art', test_art)
+  test('art', test_art)
 
-test_palette = executable(
-  'test-palette',
-  'tests/test_palette.c',
-  dependencies: [
-    libduke_dep,
-    check_dep,
-  ],
-)
+  test_palette = executable(
+    'test-palette',
+    'tests/test_palette.c',
+    dependencies: [
+      libduke_dep,
+      check_dep,
+    ],
+  )
 
-test('palette', test_palette)
+  test('palette', test_palette)
 
-test_map = executable(
-  'test-map',
-  'tests/test_map.c',
-  dependencies: [
-    libduke_dep,
-    check_dep,
-  ],
-)
+  test_map = executable(
+    'test-map',
+    'tests/test_map.c',
+    dependencies: [
+      libduke_dep,
+      check_dep,
+    ],
+  )
 
-test('map', test_map)
+  test('map', test_map)
+
+endif
 
 # Sokol is vendored at a fixed revision; disabled builds have no GPU dependencies.
 if not get_option('renderer').disabled()

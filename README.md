@@ -59,6 +59,21 @@ To run the test suite:
 meson test -C build --print-errorlogs
 ```
 
+The libcheck-based GRP, ART, palette, and map tests are enabled by default.
+To omit them and avoid the Check dependency entirely:
+
+```sh
+meson setup build-no-check -Dcheck_tests=false
+meson compile -C build-no-check
+meson test -C build-no-check --print-errorlogs
+```
+
+For an existing build, use `meson configure build -Dcheck_tests=false` (or
+`true` to re-enable them). Camera, platform, archive-tool, and enabled renderer
+tests remain available. With Check disabled, the library has no Conan-provided
+dependencies, so the `conan install` step can be skipped. The existing Conan
+manifest still installs Check for the default test-enabled workflow.
+
 To install the library, public headers, and tools using Meson:
 
 ```sh
