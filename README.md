@@ -37,6 +37,22 @@ meson compile -C build
 
 The resulting library and tools are placed in `build/`.
 
+The ART and GRP command-line tools support POSIX systems and Windows. Their
+private platform layer uses native directory enumeration, binary temporary
+files, and replacement operations. `create` refuses to overwrite an existing
+file even if that file appears while the archive is being written. Updates are
+staged beside the destination and published only after writing succeeds; source
+archive handles are closed before Windows replacement. Windows paths use the
+same narrow-character encoding as the existing library file APIs.
+
+The test suite includes archive-tool round trips and no-overwrite publication
+checks. Install Python 3 to enable the command-line round-trip tests. These tests
+can also exercise cross-compiled Windows tools under Wine:
+
+```sh
+python3 tests/test_tools.py /path/to/duke-art.exe /path/to/duke-grp.exe --runner wine
+```
+
 To run the test suite:
 
 ```sh

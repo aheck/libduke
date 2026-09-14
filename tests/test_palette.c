@@ -3,7 +3,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
+#include "test_platform.h"
 
 #include "libduke/palette.h"
 
@@ -88,8 +88,8 @@ START_TEST(test_palette_file_round_trip)
     DukePaletteFile *written = duke_palette_new();
     DukePaletteFile *read = duke_palette_new();
 
-    snprintf(filename, sizeof(filename), "/tmp/libduke-palette-%ld.dat",
-        (long) getpid());
+    snprintf(filename, sizeof(filename), "libduke-palette-%ld.dat",
+        (long) test_process_id());
     ck_assert_ptr_nonnull(written);
     ck_assert_ptr_nonnull(read);
     ck_assert(duke_palette_read_from_memory(written, contents,

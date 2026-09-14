@@ -1,7 +1,7 @@
 #include <check.h>
 #include <stdio.h>
 #include <string.h>
-#include <unistd.h>
+#include "test_platform.h"
 
 #include "libduke/grp.h"
 
@@ -19,8 +19,8 @@ START_TEST(test_grp_entries_are_read_and_accessed)
     uint32_t second_size = sizeof(second_data) - 1;
     void *data = NULL;
 
-    snprintf(filename, sizeof(filename), "/tmp/libduke-grp-%ld.grp",
-        (long) getpid());
+    snprintf(filename, sizeof(filename), "libduke-grp-%ld.grp",
+        (long) test_process_id());
     FILE *fp = fopen(filename, "wb");
     ck_assert_ptr_nonnull(fp);
     ck_assert_uint_eq(fwrite("KenSilverman", 1, 12, fp), 12);

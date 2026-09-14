@@ -2,7 +2,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
-#include <unistd.h>
+#include "test_platform.h"
 
 #include "libduke/art.h"
 
@@ -13,8 +13,8 @@ START_TEST(test_art_round_trip_and_manipulation)
     char filename[128];
     void *data = NULL;
 
-    snprintf(filename, sizeof(filename), "/tmp/libduke-art-%ld.art",
-        (long) getpid());
+    snprintf(filename, sizeof(filename), "libduke-art-%ld.art",
+        (long) test_process_id());
 
     DukeArtFile *art = duke_art_new();
     ck_assert_ptr_nonnull(art);

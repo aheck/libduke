@@ -1,13 +1,11 @@
 #define _POSIX_C_SOURCE 200809L
 
-#include <dirent.h>
 #include <errno.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/stat.h>
-#include <unistd.h>
+#include "platform.h"
 
 #include "libduke/grp.h"
 
@@ -199,8 +197,8 @@ static void free_create_entries(CreateEntry *entries, size_t count)
 static bool collect_directory(const char *directory, CreateEntry **result,
     uint32_t *result_count)
 {
-    DIR *dir = opendir(directory);
-    struct dirent *item;
+    ToolDirectory *dir = tool_opendir(directory);
+    const char *item;
     CreateEntry *entries = NULL;
     size_t count = 0;
 
@@ -214,10 +212,10 @@ static bool collect_directory(const char *directory, CreateEntry **result,
         size_t directory_length;
         size_t path_size;
         char *path;
-        struct stat status;
+        ToolStat status;
 
         errno = 0;
-        item = readdir(dir);
+        item = tool_readdir(dir);
         if (item == NULL) {
             if (errno != 0) {
                 fprintf(stderr, "ERROR: Failed while reading directory %s: %s\n",
@@ -226,11 +224,11 @@ static bool collect_directory(const char *directory, CreateEntry **result,
             }
             break;
         }
-        if (strcmp(item->d_name, ".") == 0 || strcmp(item->d_name, "..") == 0) {
+        if (strcmp(item, ".") == 0 || strcmp(item, "..") == 0) {
             continue;
         }
         directory_length = strlen(directory);
-        path_size = directory_length + strlen(item->d_name) + 2;
+        path_size = directory_length + strlen(item) + 2;
         path = malloc(path_size);
         if (path == NULL) {
             fprintf(stderr, "ERROR: Out of memory while reading %s\n", directory);
@@ -238,18 +236,18 @@ static bool collect_directory(const char *directory, CreateEntry **result,
         }
         snprintf(path, path_size, "%s%s%s", directory,
             directory_length > 0 && directory[directory_length - 1] == '/' ? "" : "/",
-            item->d_name);
-        if (stat(path, &status) != 0) {
+            item);
+        if (tool_stat(path, &status) != 0) {
             fprintf(stderr, "ERROR: Failed to inspect %s: %s\n", path,
                 strerror(errno));
             free(path);
             goto error;
         }
-        if (!S_ISREG(status.st_mode)) {
+        if (!tool_regular(status.st_mode)) {
             free(path);
             continue;
         }
-        if (item->d_name[0] == '\0' || strlen(item->d_name) > 12
+        if (item[0] == '\0' || strlen(item) > 12
                 || (uint64_t) status.st_size > UINT32_MAX) {
             fprintf(stderr, "ERROR: %s must have a 1 to 12 character name and be at most 4 GiB\n",
                 path);
@@ -270,12 +268,12 @@ static bool collect_directory(const char *directory, CreateEntry **result,
         }
         entries = grown;
         memset(&entries[count], 0, sizeof(entries[count]));
-        memcpy(entries[count].name, item->d_name, strlen(item->d_name));
+        memcpy(entries[count].name, item, strlen(item));
         entries[count].path = path;
         entries[count].size = (uint32_t) status.st_size;
         count++;
     }
-    if (closedir(dir) != 0) {
+    if (tool_closedir(dir) != 0) {
         fprintf(stderr, "ERROR: Failed to close directory %s\n", directory);
         free_create_entries(entries, count);
         return false;
@@ -289,7 +287,7 @@ static bool collect_directory(const char *directory, CreateEntry **result,
     return true;
 
 error:
-    closedir(dir);
+    tool_closedir(dir);
     free_create_entries(entries, count);
     return false;
 }
@@ -303,9 +301,10 @@ static bool create_archive(const char *archive_name, const char *directory)
     FILE *output = NULL;
     int fd = -1;
     bool ok = false;
-    struct stat status;
+    bool temporary_created = false;
+    ToolStat status;
 
-    if (lstat(archive_name, &status) == 0) {
+    if (tool_lstat(archive_name, &status) == 0) {
         fprintf(stderr, "ERROR: Archive already exists: %s\n", archive_name);
         return false;
     }
@@ -324,16 +323,15 @@ static bool create_archive(const char *archive_name, const char *directory)
         goto cleanup;
     }
     snprintf(template, template_size, "%s.tmp.XXXXXX", archive_name);
-    fd = mkstemp(template);
+    fd = tool_mkstemp(template);
     if (fd < 0) {
         fprintf(stderr, "ERROR: Failed to create temporary archive: %s\n",
             strerror(errno));
         goto cleanup;
     }
-    mode_t mask = umask(0);
-    umask(mask);
-    (void) fchmod(fd, 0666 & ~mask);
-    output = fdopen(fd, "wb");
+    temporary_created = true;
+    tool_permissions(fd, archive_name, true);
+    output = tool_fdopen(fd, "wb");
     if (output == NULL) {
         fprintf(stderr, "ERROR: Failed to open temporary archive: %s\n",
             strerror(errno));
@@ -364,7 +362,7 @@ static bool create_archive(const char *archive_name, const char *directory)
         }
         free(data);
     }
-    if (fflush(output) != 0 || fsync(fileno(output)) != 0) {
+    if (fflush(output) != 0 || tool_sync(tool_fileno(output)) != 0) {
         goto write_error;
     }
     if (fclose(output) != 0) {
@@ -372,13 +370,10 @@ static bool create_archive(const char *archive_name, const char *directory)
         goto write_error;
     }
     output = NULL;
-    if (link(template, archive_name) != 0) {
+    if (tool_publish(template, archive_name, true) != 0) {
         fprintf(stderr, "ERROR: Failed to create %s: %s\n", archive_name,
             strerror(errno));
         goto cleanup;
-    }
-    if (unlink(template) != 0) {
-        fprintf(stderr, "WARNING: Failed to remove temporary name %s\n", template);
     }
     ok = true;
     goto cleanup;
@@ -389,10 +384,10 @@ cleanup:
     if (output != NULL) {
         fclose(output);
     } else if (fd >= 0) {
-        close(fd);
+        tool_close(fd);
     }
-    if (!ok && template != NULL) {
-        unlink(template);
+    if (!ok && temporary_created) {
+        tool_unlink(template);
     }
     free(template);
     free_create_entries(entries, count);
@@ -417,10 +412,10 @@ static bool write_archive(DukeGrpFile *file, const char *archive_name,
     size_t template_size = strlen(archive_name) + sizeof(".tmp.XXXXXX");
     char *template = malloc(template_size);
     uint32_t output_count;
-    struct stat archive_stat;
     FILE *output = NULL;
     int fd = -1;
     bool ok = false;
+    bool temporary_created = false;
 
     if (template == NULL || (append && file->header.entry_count == UINT32_MAX)) {
         fprintf(stderr, "ERROR: Cannot allocate archive output\n");
@@ -428,16 +423,15 @@ static bool write_archive(DukeGrpFile *file, const char *archive_name,
     }
     output_count = file->header.entry_count + (append ? 1u : 0u);
     snprintf(template, template_size, "%s.tmp.XXXXXX", archive_name);
-    fd = mkstemp(template);
+    fd = tool_mkstemp(template);
     if (fd < 0) {
         fprintf(stderr, "ERROR: Failed to create temporary archive: %s\n",
             strerror(errno));
         goto cleanup;
     }
-    if (stat(archive_name, &archive_stat) == 0) {
-        (void) fchmod(fd, archive_stat.st_mode);
-    }
-    output = fdopen(fd, "wb");
+    temporary_created = true;
+    tool_permissions(fd, archive_name, false);
+    output = tool_fdopen(fd, "wb");
     if (output == NULL) {
         fprintf(stderr, "ERROR: Failed to open temporary archive: %s\n",
             strerror(errno));
@@ -487,7 +481,7 @@ static bool write_archive(DukeGrpFile *file, const char *archive_name,
     if (append && fwrite(new_data, 1, new_size, output) != new_size) {
         goto write_error;
     }
-    if (fflush(output) != 0 || fsync(fileno(output)) != 0) {
+    if (fflush(output) != 0 || tool_sync(tool_fileno(output)) != 0) {
         goto write_error;
     }
     if (fclose(output) != 0) {
@@ -495,7 +489,13 @@ static bool write_archive(DukeGrpFile *file, const char *archive_name,
         goto write_error;
     }
     output = NULL;
-    if (rename(template, archive_name) != 0) {
+    /* All source members are copied. Close before replacing on Windows. */
+    if (fclose(file->fp) != 0) {
+        file->fp = NULL;
+        goto write_error;
+    }
+    file->fp = NULL;
+    if (tool_publish(template, archive_name, false) != 0) {
         fprintf(stderr, "ERROR: Failed to replace %s: %s\n", archive_name,
             strerror(errno));
         goto cleanup;
@@ -509,10 +509,10 @@ cleanup:
     if (output != NULL) {
         fclose(output);
     } else if (fd >= 0) {
-        close(fd);
+        tool_close(fd);
     }
-    if (!ok && template != NULL) {
-        unlink(template);
+    if (!ok && temporary_created) {
+        tool_unlink(template);
     }
     free(template);
     return ok;

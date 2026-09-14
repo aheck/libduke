@@ -1,7 +1,7 @@
 #include <check.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
+#include "test_platform.h"
 
 #include "libduke/map.h"
 
@@ -125,8 +125,8 @@ START_TEST(test_map_write_and_read_round_trip)
     DukeMapFile *loaded = duke_map_file_new();
     DukeMapSprite *sprite = duke_map_file_add_sprite(map);
 
-    snprintf(filename, sizeof(filename), "/tmp/libduke-map-%ld.map",
-        (long)getpid());
+    snprintf(filename, sizeof(filename), "libduke-map-%ld.map",
+        (long)test_process_id());
     ck_assert_ptr_nonnull(loaded);
     ck_assert_ptr_nonnull(sprite);
     sprite->x = 256;

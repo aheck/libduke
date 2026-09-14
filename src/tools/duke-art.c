@@ -6,8 +6,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/stat.h>
-#include <unistd.h>
+#include "platform.h"
+#include "../lib/input.h"
 
 #include "libduke/art.h"
 
@@ -159,13 +159,14 @@ static bool write_tile(DukeArtFile *art, int32_t tile_number)
 static bool write_art_atomic(DukeArtFile *art, const char *filename,
     bool must_not_exist)
 {
-    struct stat status;
+    ToolStat status;
     size_t template_size = strlen(filename) + sizeof(".tmp.XXXXXX");
     char *template = NULL;
     int fd = -1;
     bool ok = false;
+    bool temporary_created = false;
 
-    if (must_not_exist && lstat(filename, &status) == 0) {
+    if (must_not_exist && tool_lstat(filename, &status) == 0) {
         fprintf(stderr, "ERROR: ART file already exists: %s\n", filename);
         return false;
     }
@@ -179,20 +180,15 @@ static bool write_art_atomic(DukeArtFile *art, const char *filename,
         return false;
     }
     snprintf(template, template_size, "%s.tmp.XXXXXX", filename);
-    fd = mkstemp(template);
+    fd = tool_mkstemp(template);
     if (fd < 0) {
         fprintf(stderr, "ERROR: Failed to create temporary ART file: %s\n",
             strerror(errno));
         goto cleanup;
     }
-    if (!must_not_exist && stat(filename, &status) == 0) {
-        (void) fchmod(fd, status.st_mode);
-    } else if (must_not_exist) {
-        mode_t mask = umask(0);
-        umask(mask);
-        (void) fchmod(fd, 0666 & ~mask);
-    }
-    if (close(fd) != 0) {
+    temporary_created = true;
+    tool_permissions(fd, filename, must_not_exist);
+    if (tool_close(fd) != 0) {
         fd = -1;
         goto cleanup;
     }
@@ -201,29 +197,22 @@ static bool write_art_atomic(DukeArtFile *art, const char *filename,
         fprintf(stderr, "ERROR: %s\n", art->last_error);
         goto cleanup;
     }
-    if (must_not_exist) {
-        if (link(template, filename) != 0) {
-            fprintf(stderr, "ERROR: Failed to create %s: %s\n", filename,
-                strerror(errno));
-            goto cleanup;
-        }
-        if (unlink(template) != 0) {
-            fprintf(stderr, "WARNING: Failed to remove temporary name %s\n",
-                template);
-        }
-    } else if (rename(template, filename) != 0) {
-        fprintf(stderr, "ERROR: Failed to replace %s: %s\n", filename,
-            strerror(errno));
+    /* Pixel data has been written; release the source handle before replacing
+     * its name, as required by Windows file sharing rules. */
+    duke_input_free(art->input);
+    art->input = NULL;
+    if (tool_publish(template, filename, must_not_exist) != 0) {
+        fprintf(stderr, "ERROR: Failed to publish %s: %s\n", filename, strerror(errno));
         goto cleanup;
     }
     ok = true;
 
 cleanup:
     if (fd >= 0) {
-        close(fd);
+        tool_close(fd);
     }
-    if (!ok && template != NULL) {
-        unlink(template);
+    if (!ok && temporary_created) {
+        tool_unlink(template);
     }
     free(template);
     return ok;

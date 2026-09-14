@@ -55,16 +55,16 @@ executable(
   install: true,
 )
 
-executable(
+duke_grp_tool = executable(
   'duke-grp',
-  'src/tools/duke-grp.c',
+  ['src/tools/duke-grp.c', 'src/tools/platform.c'],
   dependencies: libduke_static_dep,
   install: true,
 )
 
-executable(
+duke_art_tool = executable(
   'duke-art',
-  'src/tools/duke-art.c',
+  ['src/tools/duke-art.c', 'src/tools/platform.c'],
   dependencies: libduke_static_dep,
   install: true,
 )
@@ -171,3 +171,13 @@ endif
 camera_test = executable('test-camera', 'tests/test_camera.c',
   dependencies: [libduke_static_dep, math_dep], c_args: ['-UNDEBUG'])
 test('camera', camera_test)
+
+# No Check dependency: exercise the OS-specific archive publication layer.
+tool_platform_test = executable('test-tool-platform',
+  ['tests/test_tool_platform.c', 'src/tools/platform.c'])
+test('tool-platform', tool_platform_test)
+python = find_program('python3', 'python', required: false)
+if python.found()
+  test('archive-tools', python,
+    args: [files('tests/test_tools.py'), duke_art_tool, duke_grp_tool])
+endif
