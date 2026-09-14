@@ -5,6 +5,8 @@ project(
   default_options: [
     'c_std=c11',
     'warning_level=3',
+    # Sanitizers are opt-in; release artifacts must not require their runtimes.
+    'b_sanitize=none',
   ],
 )
 

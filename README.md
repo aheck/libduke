@@ -37,6 +37,25 @@ meson compile -C build
 
 The resulting library and tools are placed in `build/`.
 
+For a release build, explicitly disable sanitizers and use release dependencies:
+
+```sh
+conan install . --output-folder=conan-release --build=missing -s build_type=Release
+meson setup build-release --native-file=conan-release/conan_meson_native.ini --buildtype=release -Db_sanitize=none
+meson compile -C build-release
+```
+
+Sanitizers are disabled by default. To opt into AddressSanitizer for a debug
+build with a supported compiler, pass `-Db_sanitize=address` to `meson setup`.
+Existing build directories retain their configured sanitizer settings; changing
+only the build type does not reset them. Before rebuilding an existing release
+directory, use:
+
+```sh
+meson configure build-release --buildtype=release -Db_sanitize=none
+meson compile -C build-release
+```
+
 The ART and GRP command-line tools support POSIX systems and Windows. Their
 private platform layer uses native directory enumeration, binary temporary
 files, and replacement operations. `create` refuses to overwrite an existing
