@@ -323,10 +323,10 @@ static void bottom_swap_tests(void) {
     double top[2] = {-8192, -4096}, bottom[2] = {0, 0};
     /* Toggle the flag on identical geometry, including a sloping top edge.
      * Upper/masked/solid spans must never borrow the opposite material. */
-    assert(wall_quad(r, &src, m, 0, 0, top, bottom, 10, true));
+    assert(wall_quad(r, &src, m, 0, 0, top, bottom, 10, WALL_LOWER));
     assert(r->draws[0].tile == 10);
     a->cstat = 2;
-    assert(wall_quad(r, &src, m, 0, 0, top, bottom, 10, true));
+    assert(wall_quad(r, &src, m, 0, 0, top, bottom, 10, WALL_LOWER));
     assert(r->draws[1].tile == 11 && r->draws[1].wall == 0 && r->draws[1].sector == 0);
     for (int i = 0; i < 6; i++) {
         assert(memcmp(r->vertices[i].p, r->vertices[i + 6].p, sizeof(r->vertices[i].p)) == 0);
@@ -335,21 +335,102 @@ static void bottom_swap_tests(void) {
     assert(fabs(r->vertices[7].uv[0] - 1.25) < 1e-6);
     assert(fabs(r->vertices[6].uv[1] + 1.25) < 1e-6);
     assert(r->vertices[6].light < r->vertices[0].light);
-    assert(wall_quad(r, &src, m, 0, 0, top, bottom, 10, false));
+    assert(wall_quad(r, &src, m, 0, 0, top, bottom, 10, WALL_SOLID));
     assert(r->draws[2].tile == 10);
     a->cstat |= 8;
-    assert(wall_quad(r, &src, m, 0, 0, top, bottom, 10, true));
-    assert(fabs(r->vertices[19].uv[0] + 1.25) < 1e-6);
+    assert(wall_quad(r, &src, m, 0, 0, top, bottom, 10, WALL_LOWER));
+    assert(fabs(r->vertices[19].uv[0] - 0.25) < 1e-6);
     a->nextwall = -1;
-    assert(wall_quad(r, &src, m, 0, 0, top, bottom, 10, true));
+    assert(wall_quad(r, &src, m, 0, 0, top, bottom, 10, WALL_LOWER));
     assert(r->draws[4].tile == 10);
     duke_renderer_destroy(r);
+    duke_map_file_free(m);
+}
+
+static void wall_alignment_tests(void) {
+    const int xy[][2] = {{0, 0}, {1024, 0}, {1024, 1024}, {0, 1024}};
+    DukeMapFile *m = fixture(xy, 4, 0);
+    m->sectors = realloc(m->sectors, 2 * sizeof(*m->sectors));
+    assert(m->sectors);
+    m->sectors[1] = duke_map_sector_new();
+    assert(m->sectors[1]);
+    m->numsectors = 2;
+    m->sectors[1]->ceilingz = -8192;
+    m->sectors[1]->floorz = -4096;
+    m->walls[0]->nextsector = 1;
+    m->walls[0]->yrepeat = 16;
+    m->walls[0]->xrepeat = 8;
+    DukeRenderer *r = calloc(1, sizeof(*r));
+    assert(r);
+    Source src = {0};
+    uint32_t pixels[64 * 64] = {0};
+    assert(upload(&r->textures[10], 64, 64, pixels));
+    double top[2] = {-12288, -8192}, bottom[2] = {0, 0};
+    const WallBand bands[] = {WALL_SOLID, WALL_UPPER, WALL_LOWER, WALL_MASKED, WALL_ONE_WAY};
+    const double origins[][2] = {{-16384, 0}, {-8192, -16384}, {-4096, -16384},
+                                {-8192, -4096}, {-8192, -16384}};
+    for (int band = 0; band < 5; band++) {
+        for (int aligned = 0; aligned < 2; aligned++) {
+            m->walls[0]->cstat = aligned ? 4 : 0;
+            size_t first = r->count;
+            assert(wall_quad(r, &src, m, 0, 0, top, bottom, 10, bands[band]));
+            assert(fabs(r->vertices[first].uv[1] - (top[0] - origins[band][aligned]) / 8192.0) < 1e-6);
+            /* Equal world heights have equal V despite a sloped upper edge. */
+            assert(fabs(r->vertices[first + 2].uv[1] - r->vertices[first + 5].uv[1]) < 1e-6);
+        }
+    }
+    duke_renderer_destroy(r);
+    duke_map_file_free(m);
+}
+
+static void sector_alignment_tests(void) {
+    /* Shifted origin, first wall along +Y: relative U follows Y and V follows -X. */
+    const int xy[][2] = {{1024, 1024}, {1024, 2048}, {2048, 2048}, {2048, 1024}};
+    DukeMapFile *m = fixture(xy, 4, 0);
+    Source src = {0};
+    uint32_t pixels[64 * 64] = {0};
+    for (int relative = 0; relative < 2; relative++) {
+        for (int transform = 0; transform < 16; transform++) {
+            DukeRenderer *r = calloc(1, sizeof(*r));
+            assert(r);
+            assert(upload(&r->textures[10], 64, 64, pixels));
+            DukeMapSector *sector = m->sectors[0];
+            sector->floorpicnum = sector->ceilingpicnum = 10;
+            int flags = (relative ? 64 | 2 : 0) | ((transform & 1) ? 4 : 0)
+                        | ((transform & 2) ? 8 : 0) | ((transform & 4) ? 16 : 0)
+                        | ((transform & 8) ? 32 : 0);
+            sector->floorstat = sector->ceilingstat = flags;
+            sector->floorheinum = sector->ceilingheinum = 4096;
+            sector->floorxpanning = sector->ceilingxpanning = 64;
+            sector->floorypanning = sector->ceilingypanning = 128;
+            assert(floors(r, &src, m, 0));
+            for (size_t i = 0; i < r->count; i++) {
+                Vertex v = r->vertices[i];
+                double x = v.p[0] * 1024, y = v.p[2] * 1024;
+                double u = relative ? y - 1024 : x;
+                double t = relative ? (1024 - x) * sqrt(2.0) : -y;
+                if (transform & 1) {
+                    double tmp = u;
+                    u = t;
+                    t = tmp;
+                }
+                if (transform & 4) { u = -u; }
+                if (transform & 8) { t = -t; }
+                double repeat = (transform & 2) ? 512 : 1024;
+                assert(fabs(v.uv[0] - (u / repeat + 0.25)) < 1e-6);
+                assert(fabs(v.uv[1] - (t / repeat + 0.5)) < 1e-6);
+            }
+            duke_renderer_destroy(r);
+        }
+    }
     duke_map_file_free(m);
 }
 
 int main(void) {
     sg_setup(&(sg_desc){0});
     bottom_swap_tests();
+    wall_alignment_tests();
+    sector_alignment_tests();
     sprite_tests();
     hover_tests();
     const int ring[][2] = {{0, 0},       {4096, 0},    {4096, 4096},

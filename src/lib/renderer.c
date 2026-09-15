@@ -346,7 +346,28 @@ static bool floors(DukeRenderer *r, Source *src, const DukeMapFile *m, int id) {
                 double scale = (flags & 8) ? 8.0 : 16.0;
                 Vertex quad[4], triangles[6];
                 for (int j = 0; j < 4; j++) {
-                    double u = x[j], v = y[j];
+                    /* Build's world mapping runs V against world Y. Relative
+                     * mapping instead measures along/across the first wall. */
+                    double u = x[j], v = -y[j];
+                    if (flags & 64) {
+                        const DukeMapWall *first = m->walls[s->wallptr];
+                        const DukeMapWall *next = m->walls[first->point2];
+                        double dx = (double)next->x - first->x;
+                        double dy = (double)next->y - first->y;
+                        double length = hypot(dx, dy);
+                        double px = x[j] - first->x, py = y[j] - first->y;
+                        if (length > 0) {
+                            u = (px * dx + py * dy) / length;
+                            v = (py * dx - px * dy) / length;
+                        } else {
+                            /* Degenerate effect sectors must not produce NaNs. */
+                            u = v = 0;
+                        }
+                        if (flags & 2) {
+                            double gradient = (floor ? s->floorheinum : s->ceilingheinum) / 4096.0;
+                            v *= hypot(1.0, gradient);
+                        }
+                    }
                     if (flags & 4) {
                         double tmp = u;
                         u = v;
@@ -387,9 +408,13 @@ static bool floors(DukeRenderer *r, Source *src, const DukeMapFile *m, int id) {
     return ok;
 }
 
+/* A wall's UV anchor is a base sector height, never the sloping edge's
+ * height at an endpoint. Masked openings have their own shared-span anchors. */
+typedef enum { WALL_SOLID, WALL_UPPER, WALL_LOWER, WALL_MASKED, WALL_ONE_WAY } WallBand;
+
 static bool wall_quad(DukeRenderer *r, Source *src, const DukeMapFile *m,
                       int sector, int w, double top[2], double bottom[2],
-                      int pic, bool lower_band) {
+                      int pic, WallBand band) {
     /* Build heights increase downward. Empty spans need no geometry; if
      * only one end is closed, collapse that end rather than invert it. */
     if (bottom[0] <= top[0] && bottom[1] <= top[1]) {
@@ -400,7 +425,7 @@ static bool wall_quad(DukeRenderer *r, Source *src, const DukeMapFile *m,
     /* Bottom swap borrows appearance, not geometry or repeat values. Build's
      * horizontal flip also remains on the visible wall. */
     const DukeMapWall *material = a;
-    if (lower_band && (a->cstat & 2) && a->nextwall >= 0 &&
+    if (band == WALL_LOWER && (a->cstat & 2) && a->nextwall >= 0 &&
         a->nextwall < m->numwalls) {
         material = m->walls[a->nextwall];
         pic = material->picnum;
@@ -415,22 +440,25 @@ static bool wall_quad(DukeRenderer *r, Source *src, const DukeMapFile *m,
     for (int j = 0; j < 4; j++) {
         int end = (j == 1 || j == 2);
         double z = j < 2 ? top[end] : fmax(top[end], bottom[end]);
-        /* Horizontal repeat spans the whole wall regardless of its length.
-         * Vertical mapping is relative to this span's top at each endpoint. */
-        double u = (end ? a->xrepeat * 8.0 : 0.0) / t->width +
-                   material->xpanning / (double)t->width;
-        double origin = top[end];
-        if (lower_band) {
-            /* Lower bands align to the neighbor floor by default; bit 4
-             * instead anchors them at the visible sector's ceiling. */
-            origin = (material->cstat & 4) ? m->sectors[sector]->ceilingz
-                                           : m->sectors[a->nextsector]->floorz;
+        /* X-flip reverses the repeat span but retains the panning origin. */
+        double u = ((end != !!(a->cstat & 8) ? a->xrepeat * 8.0 : 0.0) +
+                    material->xpanning) / t->width;
+        const DukeMapSector *own = m->sectors[sector];
+        const DukeMapSector *neighbor = a->nextsector >= 0 ? m->sectors[a->nextsector] : own;
+        bool aligned = (material->cstat & 4) != 0;
+        double origin;
+        if (band == WALL_LOWER) {
+            origin = aligned ? own->ceilingz : neighbor->floorz;
+        } else if (band == WALL_UPPER || band == WALL_ONE_WAY) {
+            origin = aligned ? own->ceilingz : neighbor->ceilingz;
+        } else if (band == WALL_MASKED) {
+            origin = aligned ? fmin(own->floorz, neighbor->floorz)
+                             : fmax(own->ceilingz, neighbor->ceilingz);
+        } else {
+            origin = aligned ? own->floorz : own->ceilingz;
         }
         double texv = (z - origin) * a->yrepeat / (2048.0 * t->height) +
                       material->ypanning / 256.0;
-        if (a->cstat & 8) {
-            u = -u;
-        }
         if (material->cstat & 256) {
             texv = -texv;
         }
@@ -478,7 +506,9 @@ static bool geometry(DukeRenderer *r, Source *src, const DukeMapFile *m) {
             /* Solid boundaries and one-way walls (bit 32) cover the full
              * sector height. Portals leave the overlapping opening clear. */
             if (a->nextsector < 0 || (a->cstat & 32)) {
-                if (!wall_quad(r, src, m, s, w, top, bottom, a->picnum, false)) {
+                if (!wall_quad(r, src, m, s, w, top, bottom,
+                               a->nextsector < 0 ? a->picnum : a->overpicnum,
+                               a->nextsector < 0 ? WALL_SOLID : WALL_ONE_WAY)) {
                     return false;
                 }
             } else {
@@ -489,15 +519,15 @@ static bool geometry(DukeRenderer *r, Source *src, const DukeMapFile *m) {
                     upper[j] = fmin(bottom[j], fmax(top[j], nt[j]));
                     lower[j] = fmax(top[j], fmin(bottom[j], nb[j]));
                 }
-                if (!wall_quad(r, src, m, s, w, top, upper, a->picnum, false) ||
-                    !wall_quad(r, src, m, s, w, lower, bottom, a->picnum, true)) {
+                if (!wall_quad(r, src, m, s, w, top, upper, a->picnum, WALL_UPPER) ||
+                    !wall_quad(r, src, m, s, w, lower, bottom, a->picnum, WALL_LOWER)) {
                     return false;
                 }
                 /* Masked walls (bit 16) add an overlay across the opening.
                  * Transparent texels are discarded by the fragment shader. */
                 if (a->cstat & 16) {
                     if (!wall_quad(r, src, m, s, w, upper, lower,
-                                   a->overpicnum, false)) {
+                                   a->overpicnum, WALL_MASKED)) {
                         return false;
                     }
                 }
