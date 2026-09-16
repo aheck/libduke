@@ -46,7 +46,7 @@ struct DukeRenderer {
     int face_count, node_count;
     bool hover_enabled, pointer_valid, sprite_picking;
     float pointer[2];
-    DukeSurfaceHit hit;
+    DukeSurfaceHit hit, selection;
     sg_shader shader;
     sg_pipeline pipeline;
     sg_pipeline sprite_pipelines[4];
@@ -678,6 +678,48 @@ bool duke_renderer_get_hovered_surface(const DukeRenderer *r,
     *hit = r->hit;
     return true;
 }
+static bool matches_surface(const DukeSurfaceHit *hit, const Draw *d) {
+    if (hit->kind == DUKE_SURFACE_NONE) {
+        return false;
+    }
+    if (d->sprite) {
+        return hit->kind == DUKE_SURFACE_SPRITE &&
+               hit->sprite_index == d->sprite_index;
+    }
+    return hit->kind == d->surface && hit->sector_index == d->sector &&
+           hit->wall_index == d->wall;
+}
+bool duke_renderer_set_selected_surface(DukeRenderer *r,
+                                        const DukeSurfaceHit *hit) {
+    if (!r) {
+        return false;
+    }
+    r->selection = no_hit();
+    if (!hit || hit->kind == DUKE_SURFACE_NONE) {
+        return true;
+    }
+    for (size_t i = 0; i < r->draw_count; ++i) {
+        const Draw *d = &r->draws[i];
+        if (matches_surface(hit, d)) {
+            r->selection = (DukeSurfaceHit){.kind = hit->kind,
+                .sector_index = d->sector, .wall_index = d->wall,
+                .sprite_index = d->sprite ? d->sprite_index : -1};
+            return true;
+        }
+    }
+    return false;
+}
+bool duke_renderer_get_selected_surface(const DukeRenderer *r,
+                                        DukeSurfaceHit *hit) {
+    if (hit) {
+        *hit = no_hit();
+    }
+    if (!r || !hit || r->selection.kind == DUKE_SURFACE_NONE) {
+        return false;
+    }
+    *hit = r->selection;
+    return true;
+}
 static int pick_compare(const void *a, const void *b) {
     double x = ((const PickFace *)a)->key, y = ((const PickFace *)b)->key;
     return (x > y) - (x < y);
@@ -1134,8 +1176,10 @@ void duke_renderer_draw(DukeRenderer *r, const float mvp[16]) {
             sg_apply_uniforms(0, &(sg_range){mvp, 16 * sizeof(float)});
             current = selected;
         }
-        const float tint[4] = {1.0f, 0.7f, 0.15f,
-                               highlighted(r, &d) ? 0.4f : 0.0f};
+        const bool is_selected = matches_surface(&r->selection, &d);
+        const float tint[4] = {1.0f, is_selected ? 0.45f : 0.7f,
+                               is_selected ? 0.05f : 0.15f,
+                               (is_selected || highlighted(r, &d)) ? 0.4f : 0.0f};
         sg_apply_uniforms(1, &(sg_range){tint, sizeof(tint)});
         sg_bindings b = {.vertex_buffers[0] = r->buffer,
                          .views[0] = r->textures[d.tile].view,

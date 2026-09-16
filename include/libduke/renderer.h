@@ -63,6 +63,24 @@ void duke_renderer_set_pointer(DukeRenderer *renderer, float x, float y);
 bool duke_renderer_get_hovered_surface(const DukeRenderer *renderer,
                                        DukeSurfaceHit *hit);
 
+/**
+ * @brief Select a surface or sprite by its snapshot identity, independently of
+ * pointer picking. NULL/NONE clears selection. Invalid identities clear it and
+ * return false; valid identities return true. Position/distance are not retained.
+ * Selection uses an orange tint in preference to hover, even with hover disabled.
+ * Call on the graphics thread between draws; NULL renderer returns false.
+ */
+bool duke_renderer_set_selected_surface(DukeRenderer *renderer,
+                                        const DukeSurfaceHit *hit);
+/**
+ * @brief Copy the selected identity (position/distance are zero).
+ * Returns false and writes NONE/-1 IDs if no selection. NULL arguments are safe.
+ * Selection belongs to this immutable snapshot; hosts may restore it by identity
+ * when rebuilding a renderer for edits that preserve object indices.
+ */
+bool duke_renderer_get_selected_surface(const DukeRenderer *renderer,
+                                        DukeSurfaceHit *hit);
+
 /** @brief Attachment formats of the host's render pass. Zero uses Sokol
  * defaults. */
 typedef struct DukeRendererDesc {
