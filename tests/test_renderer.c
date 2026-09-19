@@ -444,11 +444,105 @@ static void sector_alignment_tests(void) {
     duke_map_file_free(m);
 }
 
+static void sky_tests(bool floor) {
+    DukeSurfaceKind kind = floor ? DUKE_SURFACE_FLOOR : DUKE_SURFACE_CEILING;
+    const int xy[][2] = {{0, 0}, {1024, 0}, {1024, 1024}, {0, 1024}};
+    DukeMapFile *m = fixture(xy, 4, 0);
+    DukeMapSector *s = m->sectors[0];
+    s->ceilingstat = floor ? 0 : 1;
+    s->floorstat = floor ? 1 : 0;
+    s->ceilingpicnum = 0;
+    s->floorpicnum = 1;
+    s->ceilingxpanning = 64;
+    s->ceilingypanning = 128;
+    s->ceilingshade = 8;
+    s->floorxpanning = 192;
+    s->floorypanning = 64;
+    s->floorshade = 16;
+    DukeRenderer *r = calloc(1, sizeof(*r));
+    assert(r);
+    uint8_t pixels[16] = {0};
+    assert(upload(&r->textures[0], 2, 2, pixels));
+    assert(upload(&r->textures[1], 2, 2, pixels));
+    Source src = {0};
+    assert(floors(r, &src, m, 0));
+    assert(r->sky_count == 1 && r->draw_count == 2);
+    assert(r->skies[0].picnum == (floor ? 1 : 0));
+    assert(r->skies[0].texture.width == 16 && r->skies[0].texture.height == 2);
+    for (size_t i = 0; i < r->draw_count; i++) {
+        const Draw *d = &r->draws[i];
+        assert(d->sector == 0 && d->wall == -1);
+        assert(!!d->sky == (d->surface == kind));
+        if (d->sky) {
+            assert(d->sky_pan[0] == (floor ? 0.75f : 0.25f));
+            assert(d->sky_pan[1] == (floor ? 0.25f : 0.5f));
+        }
+    }
+    /* Even a transparent base ART tile must yield an opaque, pickable sky. */
+    assert(build_picking(r));
+    double origin[3] = {0.5, 0.5, 0.5};
+    double direction[3] = {0, floor ? -1 : 1, 0}, nearest = 100;
+    const float identity[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+    pick_node(r, 0, identity, origin, direction, &nearest);
+    assert(r->hit.kind == kind && r->hit.sector_index == 0);
+    assert(fabs(nearest - 0.5) < 1e-6);
+    assert(duke_renderer_set_selected_surface(r, &r->hit));
+
+    m->sectors = realloc(m->sectors, 2 * sizeof(*m->sectors));
+    assert(m->sectors);
+    m->sectors[1] = duke_map_sector_new();
+    assert(m->sectors[1]);
+    m->numsectors = 2;
+    m->sectors[1]->ceilingstat = floor ? 0 : 1;
+    m->sectors[1]->floorstat = floor ? 1 : 0;
+    m->sectors[1]->ceilingz = -8192;
+    m->sectors[1]->floorz = -4096;
+    m->walls[0]->nextsector = 1;
+    /* Bottom swap must not replace a parallax floor's texture with a wall. */
+    m->walls[0]->nextwall = 1;
+    m->walls[0]->cstat = 2;
+    m->walls[1]->picnum = 0;
+    double top[2] = {-16384, -16384}, bottom[2] = {-8192, -4096};
+    if (floor) {
+        top[0] = -8192;
+        top[1] = -4096;
+        bottom[0] = bottom[1] = 0;
+    }
+    WallBand sky_band = floor ? WALL_LOWER : WALL_UPPER;
+    assert(wall_quad(r, &src, m, 0, 0, top, bottom, 0, sky_band));
+    const Draw *d = &r->draws[2];
+    assert(d->sky == 1 && d->surface == kind && d->wall == -1);
+    assert(d->tile == (floor ? 1 : 0));
+    assert(d->sky_pan[0] == (floor ? 0.75f : 0.25f));
+    assert(d->sky_pan[1] == (floor ? 0.25f : 0.5f));
+    assert(r->sky_count == 1 && r->vertices[d->first].light == (floor ? 0.5f : 0.75f));
+    /* Indoor transitions and the other wall bands retain their materials. */
+    const WallBand bands[] = {WALL_SOLID, floor ? WALL_UPPER : WALL_LOWER,
+                              WALL_MASKED, WALL_ONE_WAY};
+    for (int i = 0; i < 4; i++) {
+        assert(wall_quad(r, &src, m, 0, 0, top, bottom, 0, bands[i]));
+        assert(!r->draws[r->draw_count - 1].sky);
+    }
+    m->sectors[1]->ceilingstat = m->sectors[1]->floorstat = 0;
+    assert(wall_quad(r, &src, m, 0, 0, top, bottom, 0, sky_band));
+    assert(!r->draws[r->draw_count - 1].sky);
+    /* A shared tile needs only one atlas even with both surfaces parallaxed. */
+    s->ceilingstat = s->floorstat = 1;
+    s->ceilingpicnum = s->floorpicnum = floor ? 1 : 0;
+    assert(floors(r, &src, m, 0));
+    assert(r->sky_count == 1);
+    assert(r->draws[r->draw_count - 2].sky && r->draws[r->draw_count - 1].sky);
+    duke_renderer_destroy(r);
+    duke_map_file_free(m);
+}
+
 int main(void) {
     sg_setup(&(sg_desc){0});
     bottom_swap_tests();
     wall_alignment_tests();
     sector_alignment_tests();
+    sky_tests(false);
+    sky_tests(true);
     sprite_tests();
     hover_tests();
     const int ring[][2] = {{0, 0},       {4096, 0},    {4096, 4096},
@@ -457,7 +551,9 @@ int main(void) {
     DukeMapFile *m = fixture(ring, 8, 4);
     assert(duke_map_file_validate_references(m));
     check_area(m, 24);
-    m->sectors[0]->floorstat = 2;
+    m->sectors[0]->ceilingstat = 1;
+    check_area(m, 24);
+    m->sectors[0]->floorstat = 3;
     m->sectors[0]->floorheinum = 256;
     assert(fabs(surface(m, 0, true, 0, 1024) - 1024) < 0.0001);
     check_area(m, 24);

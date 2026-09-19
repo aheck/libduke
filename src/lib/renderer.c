@@ -25,12 +25,19 @@ typedef struct Texture {
     int xoffset, yoffset;
     uint8_t *alpha;
 } Texture;
+typedef struct Sky {
+    Texture texture;
+    int picnum;
+    float vertical_scale;
+} Sky;
 typedef struct Draw {
     int first, count, tile;
     bool sprite, translucent, one_sided;
     float center[3], depth;
     DukeSurfaceKind surface;
     int sector, wall, sprite_index;
+    int sky; /* One-based sky atlas index; zero is an ordinary surface. */
+    float sky_pan[2];
 } Draw;
 typedef struct PickFace {
     Draw draw;
@@ -51,9 +58,12 @@ struct DukeRenderer {
     sg_pipeline pipeline;
     sg_pipeline sprite_pipelines[4];
     sg_sampler sampler;
+    sg_sampler sky_sampler;
     sg_buffer buffer;
     /* The extra slot holds the checkerboard used for missing/invalid tiles. */
     Texture textures[TILE_COUNT + 1];
+    Sky *skies;
+    size_t sky_count;
     Vertex *vertices;
     size_t count, capacity;
     Draw *draws;
@@ -196,6 +206,104 @@ static int texture(DukeRenderer *r, Source *s, int tile) {
     }
 
     return TILE_COUNT;
+}
+
+/* Duke's backdrop consists of eight 45-degree panels. Ordinary tiles repeat;
+ * the three stock panoramas select additional ART tiles in this order.
+ * See setupbackdrop in https://github.com/icculus/duke3d/blob/main/source/premap.c.
+ */
+static int sky_panel(int picnum, int panel) {
+    static const int moon[8] = {0, 2, 3, 0, 2, 0, 1, 0};
+    static const int orbit[8] = {0, 0, 4, 0, 0, 1, 2, 3};
+    static const int city[8] = {1, 2, 1, 3, 4, 0, 2, 3};
+    const int *offsets = picnum == 80 ? moon : picnum == 84 ? orbit :
+                         picnum == 89 ? city : NULL;
+    return picnum + (offsets ? offsets[panel] : 0);
+}
+
+/* Cache a horizontal panorama independently of the ordinary tile texture.
+ * Missing panels retain the checkerboard and mismatched replacement ART is
+ * sampled at the base tile's size. No GRP data is needed after creation. */
+static int sky_texture(DukeRenderer *r, Source *src, int picnum, int tile) {
+    for (size_t i = 0; i < r->sky_count; i++) {
+        if (r->skies[i].picnum == picnum) {
+            return (int)i + 1;
+        }
+    }
+    int width = r->textures[tile].width, height = r->textures[tile].height;
+    int limit = sg_query_limits().max_image_size_2d;
+    if (width <= 0 || height <= 0 ||
+        (limit > 0 && width > limit / 8)) {
+        return -1;
+    }
+    size_t stride = (size_t)width * 8 * 4;
+    if ((size_t)height > SIZE_MAX / stride) {
+        return -1;
+    }
+    uint8_t *rgba = malloc(stride * height);
+    if (!rgba) {
+        return -1;
+    }
+    for (int panel = 0; panel < 8; panel++) {
+        int number = sky_panel(picnum, panel);
+        DukeArtTile *art = NULL;
+        DukeArtFile *owner = NULL;
+        for (size_t i = src->count; i > 0 && number >= 0 && number < TILE_COUNT; i--) {
+            art = duke_art_get_tile_by_number(src->art[i - 1], number);
+            if (art && art->width > 0 && art->height > 0) {
+                owner = src->art[i - 1];
+                break;
+            }
+        }
+        void *data = NULL;
+        if (owner && duke_art_get_tile_data_by_number(owner, number, &data) ==
+                         (size_t)-1) {
+            free(rgba);
+            return -1;
+        }
+        for (int y = 0; y < height; y++) {
+            for (int x = 0; x < width; x++) {
+                uint8_t *pixel = rgba + y * stride + (panel * width + x) * 4;
+                if (owner) {
+                    int ax = (int)((int64_t)x * art->width / width);
+                    int ay = (int)((int64_t)y * art->height / height);
+                    uint8_t index = ((uint8_t *)data)[(size_t)ax * art->height + ay];
+                    const DukePaletteColor *color = &src->palette->colors[index];
+                    pixel[0] = (color->red << 2) | (color->red >> 4);
+                    pixel[1] = (color->green << 2) | (color->green >> 4);
+                    pixel[2] = (color->blue << 2) | (color->blue >> 4);
+                } else {
+                    bool dark = ((x * 2 / width) ^ (y * 2 / height)) != 0;
+                    pixel[0] = pixel[2] = dark ? 20 : 255;
+                    pixel[1] = dark ? 20 : 0;
+                }
+                /* The sky is opaque, including palette index 255. */
+                pixel[3] = 255;
+            }
+        }
+    }
+    Sky *skies = realloc(r->skies, (r->sky_count + 1) * sizeof(*skies));
+    if (!skies) {
+        free(rgba);
+        return -1;
+    }
+    r->skies = skies;
+    Sky *sky = &r->skies[r->sky_count++];
+    *sky = (Sky){.picnum = picnum,
+                 .vertical_scale = (picnum == 89 ? 0.265625f :
+                                    picnum == 78 ? 1.0f : 0.5f) * 256 / height};
+    bool ok = upload(&sky->texture, width * 8, height, rgba);
+    free(rgba);
+    return ok ? (int)r->sky_count : -1;
+}
+
+static bool sector_sky(DukeRenderer *r, Source *src, const DukeMapSector *s,
+                       bool floor, Draw *d) {
+    d->sky = sky_texture(r, src, floor ? s->floorpicnum : s->ceilingpicnum,
+                         d->tile);
+    d->sky_pan[0] = (floor ? s->floorxpanning : s->ceilingxpanning) / 256.0f;
+    d->sky_pan[1] = (floor ? s->floorypanning : s->ceilingypanning) / 256.0f;
+    return d->sky > 0;
 }
 
 /* Append one quad as two triangles and retain its texture binding separately
@@ -398,6 +506,9 @@ static bool floors(DukeRenderer *r, Source *src, const DukeMapFile *m, int id) {
                         floor ? DUKE_SURFACE_FLOOR : DUKE_SURFACE_CEILING;
                     d->sector = id;
                     d->wall = -1;
+                    if (flags & 1) {
+                        ok = sector_sky(r, src, s, floor, d);
+                    }
                 }
             }
         }
@@ -422,10 +533,19 @@ static bool wall_quad(DukeRenderer *r, Source *src, const DukeMapFile *m,
     }
 
     const DukeMapWall *a = m->walls[w], *b = m->walls[a->point2];
+    const DukeMapSector *own = m->sectors[sector];
+    const DukeMapSector *neighbor = a->nextsector >= 0 ? m->sectors[a->nextsector] : own;
+    bool floor = band == WALL_LOWER;
+    bool sky = (band == WALL_UPPER || floor) && a->nextsector >= 0 &&
+               ((floor ? own->floorstat : own->ceilingstat) & 1) &&
+               ((floor ? neighbor->floorstat : neighbor->ceilingstat) & 1);
+    if (sky) {
+        pic = floor ? own->floorpicnum : own->ceilingpicnum;
+    }
     /* Bottom swap borrows appearance, not geometry or repeat values. Build's
      * horizontal flip also remains on the visible wall. */
     const DukeMapWall *material = a;
-    if (band == WALL_LOWER && (a->cstat & 2) && a->nextwall >= 0 &&
+    if (!sky && band == WALL_LOWER && (a->cstat & 2) && a->nextwall >= 0 &&
         a->nextwall < m->numwalls) {
         material = m->walls[a->nextwall];
         pic = material->picnum;
@@ -443,8 +563,6 @@ static bool wall_quad(DukeRenderer *r, Source *src, const DukeMapFile *m,
         /* X-flip reverses the repeat span but retains the panning origin. */
         double u = ((end != !!(a->cstat & 8) ? a->xrepeat * 8.0 : 0.0) +
                     material->xpanning) / t->width;
-        const DukeMapSector *own = m->sectors[sector];
-        const DukeMapSector *neighbor = a->nextsector >= 0 ? m->sectors[a->nextsector] : own;
         bool aligned = (material->cstat & 4) != 0;
         double origin;
         if (band == WALL_LOWER) {
@@ -463,7 +581,9 @@ static bool wall_quad(DukeRenderer *r, Source *src, const DukeMapFile *m,
             texv = -texv;
         }
         q[j] =
-            vertex(end ? b->x : a->x, end ? b->y : a->y, z, u, texv, material->shade);
+            vertex(end ? b->x : a->x, end ? b->y : a->y, z, u, texv,
+                   sky ? (floor ? own->floorshade : own->ceilingshade)
+                       : material->shade);
     }
 
     const int order[6] = {0, 1, 2, 0, 2, 3};
@@ -478,6 +598,13 @@ static bool wall_quad(DukeRenderer *r, Source *src, const DukeMapFile *m,
     d->surface = DUKE_SURFACE_WALL;
     d->sector = sector;
     d->wall = w;
+    if (sky) {
+        /* Unequal sky surfaces meet at a sky curtain, not a textured wall.
+         * Keep this boundary filled so the host's clear color cannot leak in. */
+        d->surface = floor ? DUKE_SURFACE_FLOOR : DUKE_SURFACE_CEILING;
+        d->wall = -1;
+        return sector_sky(r, src, own, floor, d);
+    }
     return true;
 }
 
@@ -784,8 +911,7 @@ static bool build_picking(DukeRenderer *r) {
 }
 /* Invert the host's matrix with pivoting; supports perspective and orthographic
  * projections and rejects singular/nonfinite matrices instead of stale hits. */
-static bool pointer_ray(const float m[16], const float pointer[2], double o[3],
-                        double dir[3], double *limit) {
+static bool inverse_matrix(const float m[16], double inverse[16]) {
     double a[4][8];
     for (int row = 0; row < 4; row++) {
         for (int col = 0; col < 8; col++) {
@@ -823,6 +949,19 @@ static bool pointer_ray(const float m[16], const float pointer[2], double o[3],
             }
         }
     }
+    for (int row = 0; row < 4; row++) {
+        for (int col = 0; col < 4; col++) {
+            inverse[col * 4 + row] = a[row][col + 4];
+        }
+    }
+    return true;
+}
+static bool pointer_ray(const float m[16], const float pointer[2], double o[3],
+                        double dir[3], double *limit) {
+    double inverse[16];
+    if (!inverse_matrix(m, inverse)) {
+        return false;
+    }
     double points[2][3];
     for (int end = 0; end < 2; end++) {
         /* An interior far sample also supports infinite-far projections. */
@@ -830,7 +969,7 @@ static bool pointer_ray(const float m[16], const float pointer[2], double o[3],
                p[4] = {0};
         for (int row = 0; row < 4; row++) {
             for (int k = 0; k < 4; k++) {
-                p[row] += a[row][k + 4] * clip[k];
+                p[row] += inverse[k * 4 + row] * clip[k];
             }
         }
         if (fabs(p[3]) < 1e-15) {
@@ -925,7 +1064,7 @@ static void pick_draw(DukeRenderer *r, const Draw *d, const float mvp[16],
             continue;
         }
         const Texture *t = &r->textures[d->tile];
-        if (t->alpha) {
+        if (t->alpha && !d->sky) {
             double tx =
                 v[0].uv[0] * (1 - u - w) + v[1].uv[0] * u + v[2].uv[0] * w;
             double ty =
@@ -1002,18 +1141,31 @@ static bool pipeline(DukeRenderer *r, const DukeRendererDesc *desc) {
         "layout(location=2) in float light;layout(location=3) in vec2 "
         "billboard;"
         "layout(location=4) in float opacity;uniform mat4 mvp;out vec2 uv;out "
-        "float brightness;out float alpha;"
+        "float brightness;out float alpha;out vec4 clip_position;"
         "void main(){vec2 "
         "r=vec2(mvp[0][0],mvp[2][0]);r=length(r)>0.00001?normalize(r):vec2(1,0)"
         ";"
         "vec3 p=position+vec3(r.x*billboard.x,billboard.y,r.y*billboard.x);"
         "gl_Position=mvp*vec4(p,1);uv=texcoord;brightness=light;alpha=opacity;"
+        "clip_position=gl_Position;"
         "}";
     sh.fragment_func.source =
         "#version 410\nuniform sampler2D tex;in vec2 uv;in float brightness;in "
-        "float alpha;uniform vec4 hover_tint;out vec4 frag;"
-        "void main(){vec4 "
-        "c=texture(tex,uv);if(c.a<0.5)discard;frag=vec4(mix(c.rgb*brightness,"
+        "float alpha;in vec4 clip_position;uniform vec4 hover_tint;"
+        "uniform mat4 inverse_mvp;uniform vec4 sky;out vec4 frag;"
+        "void main(){vec2 tc=uv;"
+        "if(sky.x>0){"
+        "vec2 ndc=clip_position.xy/clip_position.w;"
+        "vec4 a=inverse_mvp*vec4(ndc,-1,1);"
+        "vec4 b=inverse_mvp*vec4(ndc,1,1);"
+        "vec3 ray=b.xyz*a.w-a.xyz*b.w;"
+        "float horizontal=max(length(ray.xz),0.000001);"
+        "float angle=length(ray.xz)>0.000001?atan(ray.z,ray.x):0;"
+        "tc=vec2(angle/6.28318530718+sky.y/8,"
+        "0.5-ray.y/horizontal*sky.w+sky.z);"
+        "}"
+        "vec4 c=texture(tex,tc);if(sky.x==0 && c.a<0.5)discard;"
+        "frag=vec4(mix(c.rgb*brightness,"
         "hover_tint.rgb,hover_tint.a),alpha)"
         ";}";
     sh.uniform_blocks[0] = (sg_shader_uniform_block){
@@ -1022,9 +1174,13 @@ static bool pipeline(DukeRenderer *r, const DukeRendererDesc *desc) {
         .glsl_uniforms[0] = {.type = SG_UNIFORMTYPE_MAT4, .glsl_name = "mvp"}};
     sh.uniform_blocks[1] = (sg_shader_uniform_block){
         .stage = SG_SHADERSTAGE_FRAGMENT,
-        .size = 16,
+        .size = 96,
         .glsl_uniforms[0] = {.type = SG_UNIFORMTYPE_FLOAT4,
-                             .glsl_name = "hover_tint"}};
+                             .glsl_name = "hover_tint"},
+        .glsl_uniforms[1] = {.type = SG_UNIFORMTYPE_MAT4,
+                             .glsl_name = "inverse_mvp"},
+        .glsl_uniforms[2] = {.type = SG_UNIFORMTYPE_FLOAT4,
+                             .glsl_name = "sky"}};
     sh.views[0].texture =
         (sg_shader_texture_view){.stage = SG_SHADERSTAGE_FRAGMENT,
                                  .image_type = SG_IMAGETYPE_2D,
@@ -1074,8 +1230,14 @@ static bool pipeline(DukeRenderer *r, const DukeRendererDesc *desc) {
                                            .mag_filter = SG_FILTER_NEAREST,
                                            .wrap_u = SG_WRAP_REPEAT,
                                            .wrap_v = SG_WRAP_REPEAT});
+    r->sky_sampler =
+        sg_make_sampler(&(sg_sampler_desc){.min_filter = SG_FILTER_NEAREST,
+                                           .mag_filter = SG_FILTER_NEAREST,
+                                           .wrap_u = SG_WRAP_REPEAT,
+                                           .wrap_v = SG_WRAP_CLAMP_TO_EDGE});
 
     return sg_query_pipeline_state(r->pipeline) == SG_RESOURCESTATE_VALID &&
+           sg_query_sampler_state(r->sky_sampler) == SG_RESOURCESTATE_VALID &&
            sg_query_sampler_state(r->sampler) == SG_RESOURCESTATE_VALID;
 }
 
@@ -1154,6 +1316,18 @@ void duke_renderer_draw(DukeRenderer *r, const float mvp[16]) {
     /* The host may issue graphics calls between frames. Invalidate Sokol
      * cached bindings so this draw reapplies the state it depends on. */
     update_hover(r, mvp);
+    /* Reconstruct view rays from the host matrix so sky UVs are independent
+     * of camera translation, sector height, and the host's viewport origin.
+     * Homogeneous near/far points also handle infinite-far projections. */
+    struct {
+        float tint[4], inverse[16], sky[4];
+    } fragment = {0};
+    double inverse[16];
+    if (r->sky_count && inverse_matrix(mvp, inverse)) {
+        for (int i = 0; i < 16; i++) {
+            fragment.inverse[i] = inverse[i];
+        }
+    }
     sg_reset_state_cache();
     /* Opaque geometry first; blended sprites back-to-front, with depth testing
      * but no depth writes. Sorting centers is an approximation for
@@ -1177,13 +1351,19 @@ void duke_renderer_draw(DukeRenderer *r, const float mvp[16]) {
             current = selected;
         }
         const bool is_selected = matches_surface(&r->selection, &d);
-        const float tint[4] = {1.0f, is_selected ? 0.45f : 0.7f,
-                               is_selected ? 0.05f : 0.15f,
-                               (is_selected || highlighted(r, &d)) ? 0.4f : 0.0f};
-        sg_apply_uniforms(1, &(sg_range){tint, sizeof(tint)});
+        fragment.tint[0] = 1.0f;
+        fragment.tint[1] = is_selected ? 0.45f : 0.7f;
+        fragment.tint[2] = is_selected ? 0.05f : 0.15f;
+        fragment.tint[3] = (is_selected || highlighted(r, &d)) ? 0.4f : 0.0f;
+        fragment.sky[0] = d.sky != 0;
+        fragment.sky[1] = d.sky_pan[0];
+        fragment.sky[2] = d.sky_pan[1];
+        fragment.sky[3] = d.sky ? r->skies[d.sky - 1].vertical_scale : 0;
+        sg_apply_uniforms(1, &(sg_range){&fragment, sizeof(fragment)});
         sg_bindings b = {.vertex_buffers[0] = r->buffer,
-                         .views[0] = r->textures[d.tile].view,
-                         .samplers[0] = r->sampler};
+                         .views[0] = d.sky ? r->skies[d.sky - 1].texture.view
+                                          : r->textures[d.tile].view,
+                         .samplers[0] = d.sky ? r->sky_sampler : r->sampler};
         sg_apply_bindings(&b);
         sg_draw(d.first, d.count, 1);
     }
@@ -1210,6 +1390,20 @@ void duke_renderer_destroy(DukeRenderer *r) {
     if (r->sampler.id) {
         sg_destroy_sampler(r->sampler);
     }
+    if (r->sky_sampler.id) {
+        sg_destroy_sampler(r->sky_sampler);
+    }
+    for (size_t i = 0; i < r->sky_count; i++) {
+        Texture *t = &r->skies[i].texture;
+        if (t->view.id) {
+            sg_destroy_view(t->view);
+        }
+        if (t->image.id) {
+            sg_destroy_image(t->image);
+        }
+        free(t->alpha);
+    }
+    free(r->skies);
 
     /* Include the fallback slot and destroy views before their images. */
     for (int i = 0; i <= TILE_COUNT; i++) {

@@ -69,6 +69,14 @@ this is not an independent Sokol device per renderer.
 ## Current rendering scope
 
 - Textured static walls, ceilings and floors with nearest-neighbor sampling.
+- Parallax ceilings and floors (`ceilingstat & 1` / `floorstat & 1`) use a
+  direction-mapped sky panorama:
+  camera translation does not move the sky, while yaw and pitch change the view.
+  The stock Moon (#80), Orbit (#84), and Los Angeles (#89) panel sequences are
+  supported; other tiles repeat across eight panels. Both surfaces retain their
+  panning, shade, hover and selection, and the sky clamps vertically.
+  Upper bands between two sky ceilings use sky, including unequal heights.
+  Lower bands between two sky floors likewise use the floor's sky material.
 - Concave sector outlines and hole loops, triangulated by horizontal bands.
 - Slopes, portal upper/lower wall bands, and alpha-tested masked walls.
 - Bottom texture swap (wall cstat 2): lower bands borrow the opposite wall’s
@@ -83,15 +91,23 @@ this is not an independent Sokol device per renderer.
 - Missing tiles use a magenta checkerboard; missing/invalid PALETTE.DAT fails.
 
 This is an inspection renderer, not an EDuke replacement. It does not yet render
-animated/directional actor frames, parallax skies, wall translucency, palette lookup variants,
+animated/directional actor frames, wall translucency, palette lookup variants,
 first-wall-relative floor UVs or exact wall alignment rules. It draws all sectors
 with a depth buffer rather than reproducing Build portal visibility, so overlapping
 rooms/effect sectors may differ from the game. Self-intersecting sector outlines
 are not supported. Crossing sloped portal boundaries use endpoint approximation.
+Sky projection approximates the original vertical scale; custom game-defined
+sky sequences and cloud animation are not implemented. Sky coverage and depth
+use the sector surface meshes and shared wall bands, so free flight outside the
+map and overlapping rooms retain the inspection renderer's visibility limits.
 
 Tests cover concave/hole triangulation area and containment, slope heights,
 invalid renderer arguments and Sokol resource setup using a dummy backend. The
 viewer can additionally be smoke-tested against a real map/GRP with `--frames`.
+On Linux, when EGL 1.5 is available, `renderer-gl` also renders synthetic skies
+in an offscreen OpenGL context to verify panel order, translation independence,
+pitch, panning, vertical clamping and hover tint. It skips when no suitable
+context is available; no window or game data is required.
 
 
 ## Optional surface hover

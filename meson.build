@@ -171,6 +171,18 @@ if not get_option('renderer').disabled()
     include_directories: [inc, sokol_inc], dependencies: [libduke_static_dep, math_dep],
     c_args: ['-DSOKOL_DUMMY_BACKEND', '-UNDEBUG'])
   test('renderer', renderer_test)
+  # Optional surfaceless OpenGL regression test; no window system or game data.
+  if host_machine.system() == 'linux'
+    egl_dep = dependency('egl', version: '>=1.5', required: false)
+    if egl_dep.found()
+      renderer_gl_test = executable('test-renderer-gl',
+        ['tests/test_renderer_gl.c', 'src/lib/sokol.c'],
+        include_directories: [inc, sokol_inc],
+        dependencies: renderer_deps + [egl_dep],
+        c_args: ['-DSOKOL_GLCORE', '-UNDEBUG'])
+      test('renderer-gl', renderer_gl_test)
+    endif
+  endif
 endif
 
 # Camera math is available even when the renderer is disabled.

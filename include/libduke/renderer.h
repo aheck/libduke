@@ -95,7 +95,11 @@ typedef struct DukeRendererDesc {
  * pass. Map and archive are borrowed only for this call; the archive directory
  * must be loaded. Missing tiles use a checkerboard. PALETTE.DAT must be
  * present. Supports static sector surfaces, holes, slopes and portal wall
- * bands and face/wall/floor sprites. Game effects, palette lookup variants and
+ * bands, parallax ceilings/floors (ceilingstat/floorstat mask 1), and
+ * face/wall/floor sprites.
+ * Skies follow viewing direction, with the stock Duke panorama tile sequences;
+ * their sector boundaries remain available for picking and selection.
+ * Game effects, palette lookup variants and
  * exact Build visibility are not yet implemented. Overlapping sectors are drawn
  * together with depth testing. Coordinates are (Build X / 1024, -Build Z /
  * 16384, Build Y / 1024).
