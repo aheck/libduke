@@ -30,7 +30,7 @@ libduke = both_libraries(
   version: meson.project_version(),
 )
 
-libduke_dep = declare_dependency(
+libduke_shared_dep = declare_dependency(
   link_with: libduke,
   dependencies: math_dep,
   include_directories: inc,
@@ -41,6 +41,13 @@ libduke_static_dep = declare_dependency(
   dependencies: math_dep,
   include_directories: inc,
 )
+
+# MSVC does not automatically export the C API from the shared library.
+# Internal tools and tests must use the static archive so newly added APIs,
+# including the palette lookup functions, are available while building on
+# Windows. The shared library remains available for consumers that provide
+# their own export definitions.
+libduke_dep = host_machine.system() == 'windows' ? libduke_static_dep : libduke_shared_dep
 
 install_headers(
   'include/libduke/art.h',
