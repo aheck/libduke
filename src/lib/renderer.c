@@ -1,6 +1,7 @@
 #include "libduke/renderer.h"
 #include "libduke/art.h"
 #include "libduke/palette.h"
+#include "libduke/palette_lookup.h"
 #include <ctype.h>
 #include <limits.h>
 #include <math.h>
@@ -30,6 +31,10 @@ typedef struct Sky {
     int picnum;
     float vertical_scale;
 } Sky;
+typedef struct TextureVariant {
+    int tile, palette;
+    Texture texture;
+} TextureVariant;
 typedef struct Draw {
     int first, count, tile;
     bool sprite, translucent, one_sided;
@@ -62,6 +67,8 @@ struct DukeRenderer {
     sg_buffer buffer;
     /* The extra slot holds the checkerboard used for missing/invalid tiles. */
     Texture textures[TILE_COUNT + 1];
+    TextureVariant *variants;
+    size_t variant_count;
     Sky *skies;
     size_t sky_count;
     Vertex *vertices;
@@ -73,7 +80,10 @@ typedef struct Source {
     DukeArtFile **art;
     size_t count;
     DukePaletteFile *palette;
+    DukePaletteLookupFile *lookup;
 } Source;
+
+static bool upload(Texture *t, int width, int height, const void *rgba);
 
 static bool named(const char *a, const char *b) {
     while (*a && *b) {
@@ -89,15 +99,17 @@ static void source_free(Source *s) {
     }
     free(s->art);
     duke_palette_free(s->palette);
+    duke_palette_lookup_free(s->lookup);
 }
 /* Keep ART sources alive while geometry requests tiles lazily. On failure,
  * the caller releases any partially loaded source with source_free(). */
 static bool source_load(Source *s, DukeGrpFile *grp) {
     s->palette = duke_palette_new();
-    if (!s->palette) {
+    s->lookup = duke_palette_lookup_new();
+    if (!s->palette || !s->lookup) {
         return false;
     }
-    bool found = false;
+    bool found = false, found_lookup = false;
     for (uint32_t i = 0; i < grp->header.entry_count; i++) {
         DukeGrpFileEntry *e = duke_grp_get_entry_by_index(grp, i);
         if (!e) {
@@ -105,7 +117,8 @@ static bool source_load(Source *s, DukeGrpFile *grp) {
         }
         size_t len = strlen(e->filename);
         bool palette = named(e->filename, "PALETTE.DAT");
-        if (!palette && (len < 4 || !named(e->filename + len - 4, ".ART"))) {
+        bool lookup = named(e->filename, "LOOKUP.DAT");
+        if (!palette && !lookup && (len < 4 || !named(e->filename + len - 4, ".ART"))) {
             continue;
         }
         void *data = NULL;
@@ -118,6 +131,11 @@ static bool source_load(Source *s, DukeGrpFile *grp) {
                 return false;
             }
             found = true;
+        } else if (lookup) {
+            if (!duke_palette_lookup_read_from_memory(s->lookup, data, size)) {
+                return false;
+            }
+            found_lookup = true;
         } else {
             DukeArtFile *art = duke_art_new();
             if (!art) {
@@ -138,7 +156,54 @@ static bool source_load(Source *s, DukeGrpFile *grp) {
             s->art[s->count++] = art;
         }
     }
-    return found;
+    return found && found_lookup;
+}
+
+static Texture *texture_at(DukeRenderer *r, int id) {
+    return id <= TILE_COUNT ? &r->textures[id]
+                            : &r->variants[id - TILE_COUNT - 1].texture;
+}
+
+static int texture_variant(DukeRenderer *r, Source *s, int tile, int palette) {
+    for (size_t i = 0; i < r->variant_count; i++) {
+        if (r->variants[i].tile == tile && r->variants[i].palette == palette) {
+            return TILE_COUNT + 1 + (int)i;
+        }
+    }
+    if (palette == 0) return tile;
+    for (size_t i = s->count; i > 0; i--) {
+        DukeArtTile *a = duke_art_get_tile_by_number(s->art[i - 1], tile);
+        if (!a || a->width <= 0 || a->height <= 0) continue;
+        void *pixels = NULL;
+        size_t size = duke_art_get_tile_data_by_number(s->art[i - 1], tile, &pixels);
+        if (size == (size_t)-1) return -1;
+        size_t count = (size_t)a->width * a->height;
+        uint8_t *mapped = malloc(count), *rgba = malloc(count * 4);
+        if (!mapped || !rgba) { free(mapped); free(rgba); return -1; }
+        for (size_t p = 0; p < count; p++) {
+            if (!duke_palette_lookup_get_index(s->lookup, palette,
+                                                ((uint8_t *)pixels)[p], &mapped[p])) {
+                free(mapped); free(rgba); return -1;
+            }
+        }
+        bool ok = duke_art_tile_to_rgba(a, mapped, count, s->palette,
+                                        rgba, count * 4);
+        if (!ok) { free(mapped); free(rgba); return -1; }
+        TextureVariant *next = realloc(r->variants,
+            (r->variant_count + 1) * sizeof(*next));
+        if (!next) { free(mapped); free(rgba); return -1; }
+        r->variants = next;
+        TextureVariant *v = &r->variants[r->variant_count++];
+        v->tile = tile; v->palette = palette;
+        if (!upload(&v->texture, a->width, a->height, rgba)) {
+            free(mapped); free(rgba); return -1;
+        }
+        v->texture.xoffset = (int8_t)(a->picanm >> 8);
+        v->texture.yoffset = (int8_t)(a->picanm >> 16);
+        free(mapped); free(rgba);
+        return TILE_COUNT + (int)r->variant_count;
+    }
+    return TILE_COUNT;
 }
 
 static bool upload(Texture *t, int width, int height, const void *rgba) {
@@ -555,7 +620,7 @@ static bool wall_quad(DukeRenderer *r, Source *src, const DukeMapFile *m,
         return false;
     }
 
-    const Texture *t = &r->textures[tile];
+    const Texture *t = texture_at(r, tile);
     Vertex q[4], v[6];
     for (int j = 0; j < 4; j++) {
         int end = (j == 1 || j == 2);
@@ -670,7 +735,7 @@ static bool geometry(DukeRenderer *r, Source *src, const DukeMapFile *m) {
  * animation pivot; face/wall sprites are bottom-anchored unless bit 128 is set.
  */
 static bool sprite_quad(DukeRenderer *r, const DukeMapSprite *s, int tile) {
-    const Texture *t = &r->textures[tile];
+    const Texture *t = texture_at(r, tile);
     int alignment = s->cstat & 48;
     double angle = s->ang * (6.283185307179586 / 2048.0);
     double rx = sin(angle), ry = -cos(angle);
@@ -742,6 +807,7 @@ static bool sprites(DukeRenderer *r, Source *src, const DukeMapFile *m) {
             continue;
         }
         int tile = texture(r, src, s->picnum);
+        if (tile >= 0) tile = texture_variant(r, src, tile, s->pal);
         if (tile < 0 || !sprite_quad(r, s, tile)) {
             return false;
         }
@@ -1063,7 +1129,7 @@ static void pick_draw(DukeRenderer *r, const Draw *d, const float mvp[16],
             distance > *nearest) {
             continue;
         }
-        const Texture *t = &r->textures[d->tile];
+        const Texture *t = texture_at(r, d->tile);
         if (t->alpha && !d->sky) {
             double tx =
                 v[0].uv[0] * (1 - u - w) + v[1].uv[0] * u + v[2].uv[0] * w;
@@ -1230,11 +1296,14 @@ static bool pipeline(DukeRenderer *r, const DukeRendererDesc *desc) {
                                            .mag_filter = SG_FILTER_NEAREST,
                                            .wrap_u = SG_WRAP_REPEAT,
                                            .wrap_v = SG_WRAP_REPEAT});
+    /* ART skies repeat vertically as well as around the panorama. Clamping
+     * extrudes the first/last row into streaks when looking up or down,
+     * especially with star fields such as tile 97. */
     r->sky_sampler =
         sg_make_sampler(&(sg_sampler_desc){.min_filter = SG_FILTER_NEAREST,
                                            .mag_filter = SG_FILTER_NEAREST,
                                            .wrap_u = SG_WRAP_REPEAT,
-                                           .wrap_v = SG_WRAP_CLAMP_TO_EDGE});
+                                           .wrap_v = SG_WRAP_REPEAT});
 
     return sg_query_pipeline_state(r->pipeline) == SG_RESOURCESTATE_VALID &&
            sg_query_sampler_state(r->sky_sampler) == SG_RESOURCESTATE_VALID &&
@@ -1362,7 +1431,7 @@ void duke_renderer_draw(DukeRenderer *r, const float mvp[16]) {
         sg_apply_uniforms(1, &(sg_range){&fragment, sizeof(fragment)});
         sg_bindings b = {.vertex_buffers[0] = r->buffer,
                          .views[0] = d.sky ? r->skies[d.sky - 1].texture.view
-                                          : r->textures[d.tile].view,
+                                          : texture_at(r, d.tile)->view,
                          .samplers[0] = d.sky ? r->sky_sampler : r->sampler};
         sg_apply_bindings(&b);
         sg_draw(d.first, d.count, 1);
@@ -1417,6 +1486,16 @@ void duke_renderer_destroy(DukeRenderer *r) {
     for (int i = 0; i <= TILE_COUNT; i++) {
         free(r->textures[i].alpha);
     }
+    for (size_t i = 0; i < r->variant_count; i++) {
+        if (r->variants[i].texture.view.id) {
+            sg_destroy_view(r->variants[i].texture.view);
+        }
+        if (r->variants[i].texture.image.id) {
+            sg_destroy_image(r->variants[i].texture.image);
+        }
+        free(r->variants[i].texture.alpha);
+    }
+    free(r->variants);
     free(r->faces);
     free(r->nodes);
     free(r->draws);

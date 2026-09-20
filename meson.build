@@ -22,6 +22,7 @@ libduke = both_libraries(
   'src/lib/grp.c',
   'src/lib/input.c',
   'src/lib/map.c',
+  'src/lib/palette_lookup.c',
   'src/lib/palette.c',
   include_directories: inc,
   dependencies: math_dep,
@@ -46,6 +47,7 @@ install_headers(
   'include/libduke/camera.h',
   'include/libduke/grp.h',
   'include/libduke/map.h',
+  'include/libduke/palette_lookup.h',
   'include/libduke/palette.h',
   subdir: 'libduke',
 )
@@ -108,6 +110,14 @@ if get_option('check_tests')
   )
 
   test('palette', test_palette)
+
+  test_palette_lookup = executable(
+    'test-palette-lookup',
+    'tests/test_palette_lookup.c',
+    dependencies: [libduke_dep, check_dep],
+  )
+
+  test('palette-lookup', test_palette_lookup)
 
   test_map = executable(
     'test-map',

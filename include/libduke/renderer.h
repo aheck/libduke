@@ -93,8 +93,8 @@ typedef struct DukeRendererDesc {
  * The host must first call sg_setup with the OpenGL backend and make its
  * context current. The renderer never creates a window, context, event loop or
  * pass. Map and archive are borrowed only for this call; the archive directory
- * must be loaded. Missing tiles use a checkerboard. PALETTE.DAT must be
- * present. Supports static sector surfaces, holes, slopes and portal wall
+ * must be loaded. Missing tiles use a checkerboard. PALETTE.DAT and
+ * LOOKUP.DAT must be present. Supports static sector surfaces, holes, slopes and portal wall
  * bands, parallax ceilings/floors (ceilingstat/floorstat mask 1), and
  * face/wall/floor sprites.
  * Skies follow viewing direction, with the stock Duke panorama tile sequences;

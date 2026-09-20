@@ -11,9 +11,9 @@
 
 #define SIZE 32
 
-static DukeRenderer *scene(bool sky, bool floor) {
+static DukeRenderer *scene(bool sky, bool floor, int picnum) {
     DukeMapSector sector = {.wallnum = 4, .ceilingz = -16384,
-                            .ceilingpicnum = 89, .floorpicnum = 89,
+                            .ceilingpicnum = picnum, .floorpicnum = picnum,
                             .ceilingstat = sky && !floor ? 1 : 0,
                             .floorstat = sky && floor ? 1 : 0};
     DukeMapSector *sectors[] = {&sector};
@@ -36,7 +36,7 @@ static DukeRenderer *scene(bool sky, bool floor) {
                     .red = 10 + panel * 10, .green = (y / 4) * 2, .blue = 5};
             }
         }
-        assert(duke_art_set_tile(art, 89 + panel, 16, 128, 0, data, sizeof(data)));
+        assert(duke_art_set_tile(art, picnum + panel, 16, 128, 0, data, sizeof(data)));
     }
     Source src = {.art = &art, .count = 1, .palette = &palette};
     DukeRenderer *r = calloc(1, sizeof(*r));
@@ -76,7 +76,7 @@ static void sky_pixels(bool floor) {
     c.position[1] = 0.5f;
     c.pitch = direction * 0.3f;
     c.vertical_fov = 0.25f;
-    DukeRenderer *r = scene(true, floor);
+    DukeRenderer *r = scene(true, floor, 89);
     uint8_t before[SIZE * SIZE * 4], after[sizeof(before)];
     const int panels[] = {1, 2, 1, 3, 4, 0, 2, 3};
     int center = (SIZE / 2 * SIZE + SIZE / 2) * 4;
@@ -110,11 +110,6 @@ static void sky_pixels(bool floor) {
     } else {
         assert(after[center + 1] < before[center + 1]);
     }
-    /* Looking up/down clamps to the edge row without repeating the horizon. */
-    c.pitch = direction * 1.3f;
-    frame(r, &c, after);
-    assert(after[center + 1] == (floor ? 251 : 0));
-
     c.pitch = direction * 0.3f;
     Draw *sky = &r->draws[floor ? 1 : 0];
     sky->sky_pan[0] = 1;
@@ -137,11 +132,34 @@ static void sky_pixels(bool floor) {
     duke_renderer_destroy(r);
 
     /* Without the flag, the surface still has world-space texture mapping. */
-    r = scene(false, floor);
+    r = scene(false, floor, 89);
     frame(r, &c, before);
     c.position[2] += 1;
     frame(r, &c, after);
     assert(memcmp(before, after, sizeof(before)) != 0);
+    duke_renderer_destroy(r);
+}
+
+static void sky_wrap_pixels(bool floor, int picnum) {
+    DukeCamera c;
+    duke_camera_init(&c);
+    c.position[1] = 0.5f;
+    c.pitch = floor ? -1.2f : 1.2f;
+    c.vertical_fov = 0.1f;
+    DukeRenderer *r = scene(true, floor, picnum);
+    uint8_t outside[SIZE * SIZE * 4], inside[sizeof(outside)];
+    frame(r, &c, outside);
+
+    /* At this pitch the view lies wholly past the texture's top/bottom edge.
+     * Shifting it back by whole tile heights must produce the same pattern,
+     * not an extruded edge row (visible as streaks with stars such as tile 97).
+     * Cover both ordinary repeating skies and multi-panel panoramas. */
+    Draw *sky = &r->draws[floor ? 1 : 0];
+    sky->sky_pan[1] = (floor ? -1 : 1) * (picnum == 89 ? 1 : 3);
+    frame(r, &c, inside);
+    assert(memcmp(outside, inside, sizeof(outside)) == 0);
+    int center = (SIZE / 2 * SIZE + SIZE / 2) * 4;
+    assert(outside[center + 1] > 0 && outside[center + 1] < 251);
     duke_renderer_destroy(r);
 }
 
@@ -179,6 +197,10 @@ int main(void) {
         .logger.func = slog_func});
     sky_pixels(false);
     sky_pixels(true);
+    sky_wrap_pixels(false, 97);
+    sky_wrap_pixels(true, 97);
+    sky_wrap_pixels(false, 89);
+    sky_wrap_pixels(true, 89);
     sg_shutdown();
     eglMakeCurrent(display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
     eglDestroySurface(display, surface);

@@ -88,7 +88,9 @@ this is not an independent Sokol device per renderer.
 - Translucent sprites use approximate 2/3 or 1/3 alpha, sorted back to front;
   intersecting sprites can still exhibit sorting artifacts.
 - Basic UV scaling, panning, flips and approximate shade brightness.
-- Missing tiles use a magenta checkerboard; missing/invalid PALETTE.DAT fails.
+- Sprite palette lookup variants are loaded from LOOKUP.DAT and applied before
+  indexed ART pixels are converted through PALETTE.DAT. Missing/invalid
+  PALETTE.DAT or LOOKUP.DAT fails; missing tiles use a magenta checkerboard.
 
 This is an inspection renderer, not an EDuke replacement. It does not yet render
 animated/directional actor frames, wall translucency, palette lookup variants,
