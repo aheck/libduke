@@ -37,7 +37,7 @@ typedef struct TextureVariant {
 } TextureVariant;
 typedef struct Draw {
     int first, count, tile;
-    bool sprite, translucent, one_sided;
+    bool sprite, translucent, one_sided, selected;
     float center[3], depth;
     DukeSurfaceKind surface;
     int sector, wall, sprite_index;
@@ -884,23 +884,48 @@ static bool matches_surface(const DukeSurfaceHit *hit, const Draw *d) {
 }
 bool duke_renderer_set_selected_surface(DukeRenderer *r,
                                         const DukeSurfaceHit *hit) {
+    return duke_renderer_set_selected_surfaces(r, hit,
+        hit && hit->kind != DUKE_SURFACE_NONE ? 1 : 0);
+}
+bool duke_renderer_set_selected_surfaces(DukeRenderer *r,
+                                         const DukeSurfaceHit *hits, size_t count) {
     if (!r) {
         return false;
     }
     r->selection = no_hit();
-    if (!hit || hit->kind == DUKE_SURFACE_NONE) {
-        return true;
-    }
     for (size_t i = 0; i < r->draw_count; ++i) {
-        const Draw *d = &r->draws[i];
-        if (matches_surface(hit, d)) {
-            r->selection = (DukeSurfaceHit){.kind = hit->kind,
-                .sector_index = d->sector, .wall_index = d->wall,
-                .sprite_index = d->sprite ? d->sprite_index : -1};
-            return true;
+        r->draws[i].selected = false;
+    }
+    if (count && !hits) {
+        return false;
+    }
+    /* Validate the complete selection before highlighting any draw. */
+    for (size_t h = 0; h < count; ++h) {
+        bool found = false;
+        for (size_t i = 0; i < r->draw_count; ++i) {
+            if (matches_surface(&hits[h], &r->draws[i])) {
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            return false;
         }
     }
-    return false;
+    for (size_t i = 0; i < r->draw_count; ++i) {
+        Draw *d = &r->draws[i];
+        for (size_t h = 0; h < count; ++h) {
+            if (matches_surface(&hits[h], d)) {
+                d->selected = true;
+                if (h == 0) {
+                    r->selection = (DukeSurfaceHit){.kind = hits[h].kind,
+                        .sector_index = d->sector, .wall_index = d->wall,
+                        .sprite_index = d->sprite ? d->sprite_index : -1};
+                }
+            }
+        }
+    }
+    return true;
 }
 bool duke_renderer_get_selected_surface(const DukeRenderer *r,
                                         DukeSurfaceHit *hit) {
@@ -1419,7 +1444,7 @@ void duke_renderer_draw(DukeRenderer *r, const float mvp[16]) {
             sg_apply_uniforms(0, &(sg_range){mvp, 16 * sizeof(float)});
             current = selected;
         }
-        const bool is_selected = matches_surface(&r->selection, &d);
+        const bool is_selected = d.selected;
         fragment.tint[0] = 1.0f;
         fragment.tint[1] = is_selected ? 0.45f : 0.7f;
         fragment.tint[2] = is_selected ? 0.05f : 0.15f;

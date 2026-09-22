@@ -170,6 +170,18 @@ static void hover_tests(void) {
     assert(duke_renderer_get_selected_surface(r, &selection));
     assert(selection.wall_index == hit.wall_index);
     assert(matches_surface(&selection, &r->draws[0]));
+    DukeSurfaceHit multiple[2] = {hit, hit};
+    multiple[1].wall_index = 101;
+    assert(duke_renderer_set_selected_surfaces(r, multiple, 2));
+    assert(r->draws[0].selected && r->draws[1].selected && !r->draws[2].selected);
+    multiple[1].wall_index = -999;
+    assert(!duke_renderer_set_selected_surfaces(r, multiple, 2));
+    assert(!r->draws[0].selected && !r->draws[1].selected);
+    assert(!duke_renderer_get_selected_surface(r, &selection));
+    assert(!duke_renderer_set_selected_surfaces(r, NULL, 1));
+    assert(duke_renderer_set_selected_surfaces(r, NULL, 0));
+    assert(duke_renderer_set_selected_surface(r, &hit));
+    assert(r->draws[0].selected && !r->draws[1].selected);
     duke_renderer_set_hover_enabled(r, false);
     duke_renderer_set_pointer(r, 2, 0);
     update_hover(r, identity);

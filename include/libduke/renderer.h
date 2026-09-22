@@ -73,6 +73,15 @@ bool duke_renderer_get_hovered_surface(const DukeRenderer *renderer,
 bool duke_renderer_set_selected_surface(DukeRenderer *renderer,
                                         const DukeSurfaceHit *hit);
 /**
+ * @brief Replace the highlighted selection with a collection of snapshot
+ * identities. Zero count clears it; duplicates are harmless. Invalid identities
+ * or a NULL array with nonzero count clear selection and return false. The
+ * single-selection getter returns the first identity for compatibility.
+ * Call on the graphics thread between draws. The array is not retained.
+ */
+bool duke_renderer_set_selected_surfaces(DukeRenderer *renderer,
+                                         const DukeSurfaceHit *hits, size_t count);
+/**
  * @brief Copy the selected identity (position/distance are zero).
  * Returns false and writes NONE/-1 IDs if no selection. NULL arguments are safe.
  * Selection belongs to this immutable snapshot; hosts may restore it by identity
