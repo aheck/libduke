@@ -61,6 +61,7 @@ struct DukeRenderer {
     DukeSurfaceHit hit, selection;
     sg_shader shader;
     sg_pipeline pipeline;
+    sg_pipeline one_sided_wall_pipeline;
     sg_pipeline sprite_pipelines[4];
     sg_sampler sampler;
     sg_sampler sky_sampler;
@@ -663,6 +664,7 @@ static bool wall_quad(DukeRenderer *r, Source *src, const DukeMapFile *m,
     d->surface = DUKE_SURFACE_WALL;
     d->sector = sector;
     d->wall = w;
+    d->one_sided = band == WALL_MASKED || band == WALL_ONE_WAY;
     if (sky) {
         /* Unequal sky surfaces meet at a sky curtain, not a textured wall.
          * Keep this boundary filled so the host's clear color cannot leak in. */
@@ -1297,6 +1299,13 @@ static bool pipeline(DukeRenderer *r, const DukeRendererDesc *desc) {
     p.layout.attrs[3].format = SG_VERTEXFORMAT_FLOAT2;
     p.layout.attrs[4].format = SG_VERTEXFORMAT_FLOAT;
     r->pipeline = sg_make_pipeline(&p);
+    sg_pipeline_desc one_sided_wall = p;
+    one_sided_wall.cull_mode = SG_CULLMODE_FRONT;
+    one_sided_wall.face_winding = SG_FACEWINDING_CCW;
+    r->one_sided_wall_pipeline = sg_make_pipeline(&one_sided_wall);
+    if (sg_query_pipeline_state(r->one_sided_wall_pipeline) != SG_RESOURCESTATE_VALID) {
+        return false;
+    }
     for (int i = 0; i < 4; i++) {
         bool translucent = (i & 1) != 0;
         p.depth.write_enabled = !translucent;
@@ -1438,6 +1447,7 @@ void duke_renderer_draw(DukeRenderer *r, const float mvp[16]) {
         sg_pipeline selected =
             d.sprite ? r->sprite_pipelines[(d.translucent ? 1 : 0) |
                                            (d.one_sided ? 2 : 0)]
+                     : d.one_sided ? r->one_sided_wall_pipeline
                      : r->pipeline;
         if (selected.id != current.id) {
             sg_apply_pipeline(selected);
@@ -1472,6 +1482,9 @@ void duke_renderer_destroy(DukeRenderer *r) {
     }
     if (r->pipeline.id) {
         sg_destroy_pipeline(r->pipeline);
+    }
+    if (r->one_sided_wall_pipeline.id) {
+        sg_destroy_pipeline(r->one_sided_wall_pipeline);
     }
     for (int i = 0; i < 4; i++) {
         if (r->sprite_pipelines[i].id) {
