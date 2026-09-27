@@ -18,6 +18,13 @@ extern "C" {
 #define MAPV8_MAXWALLS 16384
 #define MAPV8_MAXSPRITES 16384
 #define MAP_MAXSTATUS 1024
+#define MAPV9_MAXBUNCHES 256
+
+/** @brief Direction of a TROR connection: ceiling/up or floor/down. */
+typedef enum DukeMapSurface {
+    DUKE_MAP_CEILING = 0,
+    DUKE_MAP_FLOOR = 1
+} DukeMapSurface;
 
 struct DukeMapSector;
 struct DukeMapWall;
@@ -55,7 +62,8 @@ typedef struct DukeMapSector {
                          //        bit 4: 1 = x-flip
                          //        bit 5: 1 = y-flip
                          //        bit 6: 1 = Align texture to first wall of sector
-                         //        bits 7-15: reserved
+                         //        bit 10: v9 TROR bunch in corresponding xpanning
+                         //        other high bits: engine-specific
 
     int16_t ceilingpicnum; // Ceiling texture
     int16_t ceilingheinum; // Ceiling slope (0 = no slope, 4096 = 45 degrees)
@@ -95,7 +103,9 @@ typedef struct DukeMapWall {
                    //        bit 7: 1 = Transluscence, 0 = not
                    //        bit 8: 1 = y-flipped, 0 = normal
                    //        bit 9: 1 = Transluscence reversing, 0 = normal
-                   //        bits 10-15: reserved
+                   //        bit 10: v9 upper TROR wall index in lotag
+                   //        bit 11: v9 lower TROR wall index in extra
+                   //        bits 12-15: engine-specific
 
     int16_t picnum; // Wall texture
     int16_t overpicnum; // Texture for masked/one-way walls
@@ -165,7 +175,9 @@ DukeMapFile* duke_map_file_new(void);
 /**
  * @brief Load a Build map from a file, replacing the map's current contents.
  *
- * Map format versions 7, 8, and 9 are supported. On failure, the existing map
+ * Map format versions 7, 8, and 9 are supported. Version 9 TROR connections
+ * are validated before publication; raw encoded fields are preserved.
+ * On failure, the existing map
  * contents are preserved and a diagnostic is stored in `map->last_error` when
  * @p map is non-`NULL`.
  *
@@ -180,8 +192,10 @@ bool duke_map_file_read_from_filename(DukeMapFile *map, const char *filename);
  * @brief Save a map to a Build map file.
  *
  * Map format versions 7, 8, and 9 are written in their little-endian binary
- * representation. The map is structurally validated before the destination is
- * opened. On failure, a diagnostic is stored in `map->last_error` when @p map
+ * representation. Structure and TROR connections are validated before the
+ * destination is opened. Saving TROR markers as version 7/8 is rejected, even
+ * if mapversion was changed directly. On failure, a diagnostic is stored in
+ * `map->last_error` when @p map
  * is non-`NULL`.
  *
  * @param map Map to save.
@@ -256,6 +270,71 @@ bool duke_map_file_validate_structure(DukeMapFile *map);
  * any previous error is cleared.
  */
 bool duke_map_file_validate_references(DukeMapFile *map);
+
+/**
+ * @brief Get a version 9 surface's TROR bunch ID (0..255).
+ * @return Bunch ID, -1 for an unconnected surface (including v7/v8), or -2
+ * for invalid arguments/storage. Does not modify the map or last_error.
+ */
+int duke_map_sector_get_bunch(const DukeMapFile *map, int sector,
+    DukeMapSurface surface);
+
+/**
+ * @brief Set a version 9 surface's TROR bunch ID, or disconnect it with -1.
+ * Overwrites the selected surface's X panning when connecting; disconnecting
+ * an active connection resets X panning to zero. Other fields are preserved.
+ * This is a low-level edit: callers must update the other bunch members and
+ * wall links, then call duke_map_file_validate_tror before saving.
+ * @return True on success; false leaves records unchanged and sets last_error.
+ */
+bool duke_map_sector_set_bunch(DukeMapFile *map, int sector,
+    DukeMapSurface surface, int bunch);
+
+/**
+ * @brief Get a version 9 wall's upper or lower TROR wall index.
+ * @return Wall index, -1 if unconnected (including v7/v8), or -2 for invalid
+ * arguments/storage. Encoded link values are not validated by this accessor;
+ * use duke_map_file_validate_tror for reference validation.
+ */
+int duke_map_wall_get_vertical_link(const DukeMapFile *map, int wall,
+    DukeMapSurface surface);
+
+/**
+ * @brief Set a version 9 wall's vertical link, or disconnect it with -1.
+ * Connecting overwrites lotag (up) or extra (down). Disconnecting an active
+ * link restores that field to 0 or -1, respectively. Does not update the
+ * reciprocal wall: callers must complete both sides and validate afterwards.
+ * @return True on success; false leaves records unchanged and sets last_error.
+ */
+bool duke_map_wall_set_vertical_link(DukeMapFile *map, int wall,
+    DukeMapSurface surface, int target);
+
+/**
+ * @brief Validate binary TROR markers, bunch membership and vertical links.
+ * Checks structure, and for TROR maps also ordinary references, opposite-side
+ * bunch membership, reciprocal links and matching directed XY endpoints.
+ * Does not prove matching surface heights/slopes or complete bunch coverage.
+ * TROR markers in versions 7/8 are rejected to prevent accidental downgrades.
+ * @return True if valid; false with a diagnostic in last_error when possible.
+ */
+bool duke_map_file_validate_tror(DukeMapFile *map);
+
+/**
+ * @brief Change map version without dropping TROR data or exceeding limits.
+ * Accepts 7, 8 or 9. Refuses v7/v8 when TROR markers remain, even if the caller
+ * previously changed mapversion directly. Validates the target representation.
+ * @return True on success; false preserves mapversion and sets last_error.
+ */
+bool duke_map_file_set_version(DukeMapFile *map, int32_t version);
+
+/**
+ * @brief Explicitly remove all binary TROR connections, retaining mapversion.
+ * Resets only marked X-panning fields to 0 and marked wall lotag/extra fields
+ * to 0/-1; their pre-TROR values cannot be recovered. Geometry is unchanged.
+ * Works with v7/v8 too, allowing recovery from a direct mapversion change.
+ * @return True on success; false leaves records unchanged and sets last_error.
+ */
+bool duke_map_file_clear_tror(DukeMapFile *map);
 
 
 /** @brief Planar position relative to a sector, including its hole loops. */

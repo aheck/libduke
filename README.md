@@ -13,6 +13,7 @@ original game executable.
 - Read, validate, inspect, and write complete Build palette files
 - Access ART pixel data lazily or load complete tile sets
 - Read and write Build map versions 7, 8, and 9
+- Query/edit version 9 TROR bunches and vertical wall links, with validation
 - Add and remove map sprites
 - Validate map structure, geometry, portals, slopes, sprites, and player starts
 - Explicit little-endian handling in the library's binary format readers
@@ -20,6 +21,64 @@ original game executable.
 
 The repository also builds three command-line programs: `duke-grp`,
 `duke-art`, and `duke-map`.
+
+## Version 9 maps (binary TROR)
+
+Use `duke_map_sector_get_bunch` / `duke_map_sector_set_bunch` for ceiling and
+floor bunch IDs, and `duke_map_wall_get_vertical_link` /
+`duke_map_wall_set_vertical_link` for upper and lower wall connections.
+Directions are `DUKE_MAP_CEILING` (up) and `DUKE_MAP_FLOOR` (down). Bunch IDs
+range from 0 to 255; -1 disconnects a surface or wall. A bunch can contain
+multiple sectors on either side. Wall links are reciprocal and connect edges
+with the **same** XY direction, unlike ordinary red-wall portals.
+
+The structs retain the binary representation for compatibility and lossless
+round trips: surface stat bit 10 marks a bunch ID in X panning; wall cstat bits
+10/11 mark upper/lower links in lotag/extra. Those marked fields are **not**
+ordinary texture panning or game tags. Use the accessors instead of directly
+editing them, and preserve these bits when changing other surface/wall flags.
+Accessors do not maintain a second copy of the data or renumber bunch IDs.
+
+Setters are low-level operations: assemble both sides of each connection,
+then call `duke_map_file_validate_tror`. It checks ordinary references, bunch
+membership on both sides, valid reciprocal vertical links and matching XY
+endpoints. It does not prove matching Z/slopes, full surface coverage, or
+engine-specific gameplay constraints. Version 9 loading and all map saving
+perform these checks automatically; failed loading preserves the old map, and
+validation failure on saving leaves the destination unopened.
+
+Use `duke_map_file_set_version` to change format while checking its limits.
+TROR connections require version 9 regardless of map size. Saving as 7/8 is
+rejected while TROR marker bits remain, even after a direct assignment to
+`mapversion`. This conservative check also rejects old maps using those bits
+as otherwise-unused flags. Downgrading requires explicitly calling
+`duke_map_file_clear_tror` first. This discards the connections and resets only
+their occupied fields (X panning and upper-wall lotag to 0, lower-wall extra to
+-1); it cannot restore values that were overwritten when TROR was created.
+The function does not change geometry or the map version.
+
+This is format/API support only. The renderer does not yet render through
+TROR floors and ceilings, and editors must update vertical references when
+renumbering walls or altering connected geometry. Text-based map formats are
+not included.
+
+`meson test -C build map-tror` runs standalone synthetic regression tests,
+including three stacked levels, one-to-many bunches, malformed references,
+non-destructive failures, version limits and v7/v8/v9 round trips. To also test
+real Mapster32 maps without redistributing external assets:
+
+```sh
+./build/test-map-tror /path/to/eduke32/package/sdk/samples/trueror1.map
+```
+
+Each external fixture must be a v9 TROR map and is checked for byte-identical
+round trips without modifying it. Compatibility was checked against the
+`trueror1.map` SDK sample shipped in EDuke32 `20260203-10664-ba6b7bb1d`
+(96 sectors, 997 walls; SHA-256
+`8dcfb7db66e22cfc51f7cdf6c03ee192df3432200e4916e1616d5da73aa7a66a`).
+The encoding follows `source/build/include/build.h` (binary-v9 compatibility
+helpers) and `source/build/src/engine.cpp` (YAX accessors) from that source
+distribution; upstream is https://voidpoint.io/terminx/eduke32.
 
 ## Building
 

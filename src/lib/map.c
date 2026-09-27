@@ -292,6 +292,15 @@ bool duke_map_file_read_from_filename(DukeMapFile *map, const char *filename)
     }
 
     //
+    // Validate v9 connections before replacing the caller's map. Older files
+    // retain their historical import behavior, including unused flag bits.
+    //
+    if (loaded->mapversion == 9 && !duke_map_file_validate_tror(loaded)) {
+        memcpy(map->last_error, loaded->last_error, sizeof(map->last_error));
+        goto fail;
+    }
+
+    //
     // Cleanup
     //
     fclose(fp);
@@ -316,7 +325,7 @@ bool duke_map_file_write_to_filename(DukeMapFile *map, const char *filename)
         return false;
     }
 
-    if (!duke_map_file_validate_structure(map)) {
+    if (!duke_map_file_validate_tror(map)) {
         return false;
     }
 
@@ -457,6 +466,7 @@ bool duke_map_file_validate(DukeMapFile *map)
     /* Do cheaper prerequisite checks first. Each public validator repeats its
      * own prerequisites so that it is also safe to call independently. */
     return duke_map_file_validate_structure(map)
+        && duke_map_file_validate_tror(map)
         && duke_map_file_validate_sector_wall_ownership(map)
         && duke_map_file_validate_wall_loops(map)
         && duke_map_file_validate_geometry(map)

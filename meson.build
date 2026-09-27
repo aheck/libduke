@@ -22,6 +22,7 @@ libduke = both_libraries(
   'src/lib/grp.c',
   'src/lib/input.c',
   'src/lib/map.c',
+  'src/lib/map_tror.c',
   'src/lib/palette_lookup.c',
   'src/lib/palette.c',
   include_directories: inc,
@@ -203,6 +204,10 @@ if not get_option('renderer').disabled()
 endif
 
 # Camera math is available even when the renderer is disabled.
+map_tror_test = executable('test-map-tror', 'tests/test_map_tror.c',
+  dependencies: libduke_static_dep, c_args: ['-UNDEBUG'])
+test('map-tror', map_tror_test)
+
 camera_test = executable('test-camera', 'tests/test_camera.c',
   dependencies: [libduke_static_dep, math_dep], c_args: ['-UNDEBUG'])
 test('camera', camera_test)
