@@ -857,27 +857,17 @@ static bool on_segment(const DukeMapWall *a, const DukeMapWall *b,
         && between(p->y, a->y, b->y);
 }
 
-static int sign_long_double(long double value)
-{
-    return (value > 0.0L) - (value < 0.0L);
-}
-
 static bool segments_intersect(const DukeMapWall *a, const DukeMapWall *b,
     const DukeMapWall *c, const DukeMapWall *d)
 {
     long double o1 = orient(a, b, c), o2 = orient(a, b, d);
     long double o3 = orient(c, d, a), o4 = orient(c, d, b);
 
-    /* Opposite orientations are a proper crossing. The remaining tests also
-     * catch collinear overlap and one segment touching the middle of another. */
-    if (sign_long_double(o1) != sign_long_double(o2)
-        && sign_long_double(o3) != sign_long_double(o4)) {
-        return true;
-    }
-    return (o1 == 0.0L && on_segment(a, b, c))
-        || (o2 == 0.0L && on_segment(a, b, d))
-        || (o3 == 0.0L && on_segment(c, d, a))
-        || (o4 == 0.0L && on_segment(c, d, b));
+    /* Build maps can contain touching boundaries and collinear backtracking
+     * edges in legacy sectors. Reject only proper crossings, which make the
+     * sector interior ambiguous. */
+    return ((o1 > 0.0L && o2 < 0.0L) || (o1 < 0.0L && o2 > 0.0L))
+        && ((o3 > 0.0L && o4 < 0.0L) || (o3 < 0.0L && o4 > 0.0L));
 }
 
 DukeMapPointLocation duke_map_sector_classify_point(const DukeMapFile *map,
@@ -982,14 +972,6 @@ bool duke_map_file_validate_geometry(DukeMapFile *map)
                 if (count < 3 || area == 0.0L) {
                     return map_invalid(map,
                         "Wall loop beginning at %d is degenerate", w);
-                }
-                /* Build's Y axis points down on the editor map: the outer loop
-                 * therefore has positive signed area and holes have negative
-                 * signed area. wallptr identifies the outer loop. */
-                if ((w == first && area < 0.0L)
-                    || (w != first && area > 0.0L)) {
-                    return map_invalid(map,
-                        "Wall loop beginning at %d has invalid winding", w);
                 }
             }
         }

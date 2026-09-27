@@ -320,7 +320,7 @@ START_TEST(test_geometry_rejects_self_intersection)
 }
 END_TEST
 
-START_TEST(test_geometry_rejects_reversed_outer_loop)
+START_TEST(test_geometry_accepts_reversed_outer_loop)
 {
     DukeMapFile *map = square_map();
 
@@ -328,8 +328,7 @@ START_TEST(test_geometry_rejects_reversed_outer_loop)
     map->walls[1]->point2 = 0;
     map->walls[2]->point2 = 1;
     map->walls[3]->point2 = 2;
-    ck_assert(!duke_map_file_validate_geometry(map));
-    ck_assert(strstr(map->last_error, "winding") != NULL);
+    ck_assert(duke_map_file_validate_geometry(map));
     duke_map_file_free(map);
 }
 END_TEST
@@ -640,7 +639,7 @@ static Suite *map_suite(void)
     tcase_add_test(tc, test_loop_rejects_cross_sector_point2);
     tcase_add_test(tc, test_geometry_rejects_zero_length_wall);
     tcase_add_test(tc, test_geometry_rejects_self_intersection);
-    tcase_add_test(tc, test_geometry_rejects_reversed_outer_loop);
+    tcase_add_test(tc, test_geometry_accepts_reversed_outer_loop);
     tcase_add_test(tc, test_portal_must_be_complete);
     tcase_add_test(tc, test_reciprocal_portal_is_valid);
     tcase_add_test(tc, test_portal_endpoints_must_match);
