@@ -19,6 +19,7 @@ static struct {
     DukeCamera camera;
     bool keys[SAPP_MAX_KEYCODES];
     bool hover_enabled, pointer_valid;
+    bool show_tror_planes;
     float mouse_x, mouse_y;
     int frames, frame_limit;
 } state;
@@ -26,6 +27,12 @@ static struct {
 static void fail(const char *message) {
     fprintf(stderr, "duke-view: %s\n", message);
     exit(EXIT_FAILURE);
+}
+static void update_title(void) {
+    char title[160];
+    snprintf(title, sizeof(title), "Duke map viewer — hover %s (H) | TROR planes %s (T)",
+        state.hover_enabled ? "ON" : "OFF", state.show_tror_planes ? "SOLID" : "OPEN");
+    sapp_set_window_title(title);
 }
 static void init(void) {
     sg_setup(&(sg_desc){.environment = sglue_environment(),
@@ -44,6 +51,8 @@ static void init(void) {
     if (!state.renderer) {
         fail(error);
     }
+    duke_renderer_set_tror_planes_visible(state.renderer, state.show_tror_planes);
+    update_title();
     duke_camera_init_from_map(&state.camera, state.map);
     duke_map_file_free(state.map);
     state.map = NULL;
@@ -99,9 +108,13 @@ static void event(const sapp_event *e) {
             e->key_code == SAPP_KEYCODE_H) {
             state.hover_enabled = !state.hover_enabled;
             duke_renderer_set_hover_enabled(state.renderer, state.hover_enabled);
-            sapp_set_window_title(state.hover_enabled
-                ? "Duke map viewer — hover ON (H to toggle)"
-                : "Duke map viewer — hover OFF (H to toggle)");
+            update_title();
+        }
+        if (e->type == SAPP_EVENTTYPE_KEY_DOWN && !e->key_repeat &&
+            e->key_code == SAPP_KEYCODE_T) {
+            state.show_tror_planes = !state.show_tror_planes;
+            duke_renderer_set_tror_planes_visible(state.renderer, state.show_tror_planes);
+            update_title();
         }
         if (e->type == SAPP_EVENTTYPE_KEY_DOWN &&
                 e->key_code == SAPP_KEYCODE_ESCAPE) {
@@ -145,19 +158,27 @@ static void cleanup(void) {
 
 sapp_desc sokol_main(int argc, char **argv) {
     if (argc == 2 && (!strcmp(argv[1], "--help") || !strcmp(argv[1], "-h"))) {
-        puts("Usage: duke-view MAP GRP [--frames N]\nW/S: fly along view | A/D: strafe | "
-                "Shift: faster | H: toggle surface highlight | Click: mouse look | Esc: release mouse/quit\nStatic "
+        puts("Usage: duke-view MAP GRP [--frames N] [--tror-planes]\nW/S: fly along view | A/D: strafe | "
+                "Shift: faster | H: toggle surface highlight | T: toggle solid TROR planes | Click: mouse look | Esc: release mouse/quit\nStatic "
                 "free-flight viewer; no collision or game simulation.");
         exit(EXIT_SUCCESS);
     }
-    if (argc != 3 && argc != 5) {
-        fail("Usage: duke-view MAP GRP [--frames N]");
+    if (argc < 3) {
+        fail("Usage: duke-view MAP GRP [--frames N] [--tror-planes]");
     }
-    if (argc == 5) {
+    for (int i = 3; i < argc; ++i) {
+        if (!strcmp(argv[i], "--tror-planes")) {
+            state.show_tror_planes = true;
+            continue;
+        }
+        if (strcmp(argv[i], "--frames") || i + 1 >= argc) {
+            fail("Usage: duke-view MAP GRP [--frames N] [--tror-planes]");
+        }
         char *end = NULL;
         errno = 0;
-        long count = strtol(argv[4], &end, 10);
-        if (errno || strcmp(argv[3], "--frames") || !end || end == argv[4] ||
+        const char *value = argv[++i];
+        long count = strtol(value, &end, 10);
+        if (errno || !end || end == value ||
                 *end || count < 1 || count > 1000000) {
             fail("Invalid --frames count");
         }
@@ -182,7 +203,7 @@ sapp_desc sokol_main(int argc, char **argv) {
         .cleanup_cb = cleanup,
         .width = 1280,
         .height = 720,
-        .window_title = "Duke map viewer — hover OFF (H to toggle)",
+        .window_title = "Duke map viewer — H: hover | T: solid TROR planes",
         .logger.func = slog_func,
         .gl = {.major_version = 4, .minor_version = 1}};
 }

@@ -8,6 +8,7 @@
 #define SOKOL_LOG_IMPL
 #include "sokol_log.h"
 #include <assert.h>
+#include "renderer_tror_fixture.h"
 
 #define SIZE 32
 
@@ -163,6 +164,118 @@ static void sky_wrap_pixels(bool floor, int picnum) {
     duke_renderer_destroy(r);
 }
 
+static DukeRenderer *tror_scene(int material, bool transparent) {
+    DukeMapFile *map = tror_fixture(false, false);
+    map->sectors[0]->floorstat |= material;
+    map->sectors[1]->ceilingstat |= material;
+    DukeArtFile *art = duke_art_new();
+    assert(art);
+    DukePaletteFile palette = {0};
+    palette.colors[1].red = 63;
+    palette.colors[2].blue = 63;
+    palette.colors[3].green = 63;
+    for (int tile = 1; tile <= 3; ++tile) {
+        uint8_t pixels[4];
+        memset(pixels, tile == 3 && transparent ? 255 : tile, sizeof(pixels));
+        assert(duke_art_set_tile(art, tile, 2, 2, 0, pixels, sizeof(pixels)));
+    }
+    Source src = {.art = &art, .count = 1, .palette = &palette};
+    DukeRenderer *r = calloc(1, sizeof(*r));
+    assert(r);
+    for (int s = 0; s < 3; ++s) {
+        assert(floors(r, &src, map, s));
+    }
+    const DukeRendererDesc desc = {.color_format = SG_PIXELFORMAT_RGBA8,
+        .depth_format = SG_PIXELFORMAT_DEPTH_STENCIL, .sample_count = 1};
+    assert(pipeline(r, &desc));
+    r->buffer = sg_make_buffer(&(sg_buffer_desc){
+        .data = {r->vertices, r->count * sizeof(Vertex)}});
+    assert(sg_query_buffer_state(r->buffer) == SG_RESOURCESTATE_VALID);
+    assert(build_picking(r));
+    duke_art_free(art);
+    duke_map_file_free(map);
+    return r;
+}
+
+static void tror_pixels(void) {
+    DukeCamera camera;
+    duke_camera_init(&camera);
+    camera.position[1] = 1.5f;
+    camera.pitch = -1.3f;
+    camera.vertical_fov = 1.0f;
+    uint8_t open[SIZE * SIZE * 4], solid[sizeof(open)], again[sizeof(open)];
+    const int center = (SIZE / 2 * SIZE + SIZE / 2) * 4;
+    DukeRenderer *r = tror_scene(0, false);
+    frame(r, &camera, open);
+    assert(open[center] == 255 && open[center + 1] == 0 && open[center + 2] == 0);
+    duke_renderer_set_tror_planes_visible(r, true);
+    frame(r, &camera, solid);
+    int black = 0, text = 0;
+    for (int p = 0; p < SIZE * SIZE; ++p) {
+        assert(solid[p * 4] == solid[p * 4 + 1] && solid[p * 4 + 2] == 0);
+        assert(solid[p * 4 + 3] == 255);
+        if (solid[p * 4] == 0) {
+            ++black;
+        } else {
+            assert(solid[p * 4] == 160);
+            ++text;
+        }
+    }
+    assert(black > 0 && text > 0);
+    duke_renderer_set_tror_planes_visible(r, false);
+    frame(r, &camera, again);
+    assert(memcmp(open, again, sizeof(open)) == 0);
+
+    duke_renderer_set_hover_enabled(r, true);
+    duke_renderer_set_pointer(r, 0, 0);
+    frame(r, &camera, again);
+    DukeSurfaceHit hit;
+    assert(duke_renderer_get_hovered_surface(r, &hit));
+    assert(hit.kind == DUKE_SURFACE_FLOOR && hit.sector_index == 2);
+    duke_renderer_set_tror_planes_visible(r, true);
+    assert(!duke_renderer_get_hovered_surface(r, &hit));
+    frame(r, &camera, again);
+    assert(duke_renderer_get_hovered_surface(r, &hit));
+    assert(hit.kind == DUKE_SURFACE_FLOOR && hit.sector_index == 0);
+
+    /* From below, the other sector's ceiling owns the shared plane. */
+    camera.position[1] = 0.5f;
+    camera.pitch = 1.3f;
+    frame(r, &camera, again);
+    assert(duke_renderer_get_hovered_surface(r, &hit));
+    assert(hit.kind == DUKE_SURFACE_CEILING && hit.sector_index == 1);
+    duke_renderer_set_tror_planes_visible(r, false);
+    frame(r, &camera, again);
+    assert(duke_renderer_get_hovered_surface(r, &hit));
+    assert(hit.kind == DUKE_SURFACE_CEILING && hit.sector_index == 0);
+    duke_renderer_destroy(r);
+
+    /* Masking, both blend weights, and alpha holes remain independent of the
+     * diagnostic mode. Opaque black must not act as a transparency key. */
+    camera.position[1] = 1.5f;
+    camera.pitch = -1.3f;
+    for (int mode = 0; mode < 4; ++mode) {
+        int flags = mode == 0 || mode == 3 ? 128 : mode == 1 ? 256 : 384;
+        r = tror_scene(flags, mode == 3);
+        frame(r, &camera, open);
+        int red = mode == 0 ? 0 : mode == 1 ? 85 : mode == 2 ? 170 : 255;
+        assert(abs(open[center] - red) <= 1);
+        assert(abs(open[center + 1] - (255 - red)) <= 1);
+        duke_renderer_set_tror_planes_visible(r, true);
+        frame(r, &camera, solid);
+        assert(solid[center] == solid[center + 1] && solid[center + 2] == 0);
+        duke_renderer_set_tror_planes_visible(r, false);
+        frame(r, &camera, again);
+        assert(memcmp(open, again, sizeof(open)) == 0);
+        duke_renderer_set_hover_enabled(r, true);
+        duke_renderer_set_pointer(r, 0, 0);
+        frame(r, &camera, again);
+        assert(duke_renderer_get_hovered_surface(r, &hit));
+        assert(hit.sector_index == (mode == 3 ? 2 : 0));
+        duke_renderer_destroy(r);
+    }
+}
+
 int main(void) {
     EGLDisplay display = eglGetPlatformDisplay(EGL_PLATFORM_SURFACELESS_MESA,
                                                EGL_DEFAULT_DISPLAY, NULL);
@@ -201,6 +314,7 @@ int main(void) {
     sky_wrap_pixels(true, 97);
     sky_wrap_pixels(false, 89);
     sky_wrap_pixels(true, 89);
+    tror_pixels();
     sg_shutdown();
     eglMakeCurrent(display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
     eglDestroySurface(display, surface);

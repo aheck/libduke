@@ -2,6 +2,7 @@
  */
 #include "../src/lib/renderer.c"
 #include <assert.h>
+#include "renderer_tror_fixture.h"
 
 static DukeMapFile *fixture(const int xy[][2], int n, int hole) {
     DukeMapFile *m = duke_map_file_new();
@@ -550,8 +551,75 @@ static void sky_tests(bool floor) {
     duke_map_file_free(m);
 }
 
+static void tror_geometry_tests(void) {
+    for (int hole = 0; hole < 2; ++hole) {
+        for (int slope = 0; slope < 2; ++slope) {
+            DukeMapFile *m = tror_fixture(hole, slope);
+            DukeRenderer *r = calloc(1, sizeof(*r));
+            assert(r);
+            Source src = {0};
+            r->textures[TILE_COUNT].width = r->textures[TILE_COUNT].height = 2;
+            for (int s = 0; s < 3; ++s) {
+                assert(floors(r, &src, m, s));
+            }
+            double open_area = 0, solid_area = 0;
+            for (size_t i = 0; i < r->draw_count; ++i) {
+                Draw *d = &r->draws[i];
+                assert(d->tror == !((d->sector == 0 && d->surface == DUKE_SURFACE_CEILING)
+                    || (d->sector == 2 && d->surface == DUKE_SURFACE_FLOOR)));
+                assert(draw_visible(r, d) == !d->tror);
+                for (int j = 0; j < d->count; j += 3) {
+                    const Vertex *a = &r->vertices[d->first + j], *b = a + 1, *c = a + 2;
+                    double area = fabs((b->p[0] - a->p[0]) * (c->p[2] - a->p[2])
+                        - (b->p[2] - a->p[2]) * (c->p[0] - a->p[0])) / 2;
+                    solid_area += area;
+                    if (draw_visible(r, d)) {
+                        open_area += area;
+                    }
+                    for (int k = 0; k < 3; ++k) {
+                        const Vertex *v = a + k;
+                        assert(fabs(v->p[1] + surface(m, d->sector,
+                            d->surface == DUKE_SURFACE_FLOOR, v->p[0] * 1024,
+                            v->p[2] * 1024) / 16384) < 0.00001);
+                        if (d->tror) {
+                            /* The encoded bunch ID (including 255) must not
+                             * become a horizontal texture offset. */
+                            assert(fabs(v->uv[0] - v->p[0] * 32) < 0.00001);
+                        }
+                    }
+                }
+            }
+            assert(fabs(open_area - 2 * (4096 - (hole ? 16 : 0))) < 0.0001);
+            assert(fabs(solid_area - 3 * open_area) < 0.0001);
+            duke_renderer_set_tror_planes_visible(r, true);
+            for (size_t i = 0; i < r->draw_count; ++i) {
+                assert(draw_visible(r, &r->draws[i]));
+            }
+            duke_renderer_destroy(r);
+            assert(duke_map_sector_get_bunch(m, 1, DUKE_MAP_FLOOR) == 255);
+            /* Removing explicit connections leaves ordinary overlapping rooms
+             * closed. Never infer TROR just from their XY coordinates. */
+            assert(duke_map_file_clear_tror(m));
+            assert(duke_map_file_set_version(m, 7));
+            r = calloc(1, sizeof(*r));
+            assert(r);
+            r->textures[TILE_COUNT].width = r->textures[TILE_COUNT].height = 2;
+            for (int s = 0; s < 3; ++s) {
+                assert(floors(r, &src, m, s));
+            }
+            for (size_t i = 0; i < r->draw_count; ++i) {
+                assert(!r->draws[i].tror && draw_visible(r, &r->draws[i]));
+            }
+            duke_renderer_destroy(r);
+            duke_map_file_free(m);
+        }
+    }
+    duke_renderer_set_tror_planes_visible(NULL, true);
+}
+
 int main(void) {
     sg_setup(&(sg_desc){0});
+    tror_geometry_tests();
     bottom_swap_tests();
     wall_alignment_tests();
     sector_alignment_tests();

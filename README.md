@@ -57,10 +57,11 @@ their occupied fields (X panning and upper-wall lotag to 0, lower-wall extra to
 -1); it cannot restore values that were overwritten when TROR was created.
 The function does not change geometry or the map version.
 
-This is format/API support only. The renderer does not yet render through
-TROR floors and ceilings, and editors must update vertical references when
-renumbering walls or altering connected geometry. Text-based map formats are
-not included.
+The optional renderer renders through open TROR floors and ceilings and
+supports masked/translucent connecting materials. It can also show opaque
+diagnostic planes; see [RENDERING.md](RENDERING.md). Editors must still update
+vertical references when renumbering walls or altering connected geometry.
+Text-based map formats are not included.
 
 `meson test -C build map-tror` runs standalone synthetic regression tests,
 including three stacked levels, one-to-many bunches, malformed references,

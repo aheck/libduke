@@ -47,6 +47,17 @@ void duke_renderer_set_hover_enabled(DukeRenderer *renderer, bool enabled);
 void duke_renderer_set_sprite_picking_enabled(DukeRenderer *renderer,
                                               bool enabled);
 /**
+ * @brief Show connected TROR floors/ceilings as opaque diagnostic planes.
+ * Disabled by default: unmasked connections are open, while masked and
+ * translucent connections retain their map material. When enabled, all TROR
+ * planes use a repeating full-bright TROR label on an opaque black background.
+ * Planes face their owning sector and are pickable in diagnostic mode; open
+ * connections otherwise let picking through. Clears the previous hover hit,
+ * but preserves selection. Does not modify map data or rebuild GPU resources.
+ * Call on the graphics thread between draws. NULL is a no-op.
+ */
+void duke_renderer_set_tror_planes_visible(DukeRenderer *renderer, bool visible);
+/**
  * @brief Set pointer coordinates relative to the host's rendering viewport.
  * X spans -1 (left) to +1 (right); Y spans -1 (bottom) to +1 (top).
  * Outside/nonfinite coordinates clear the hit and suppress picking. Each call
@@ -105,7 +116,9 @@ typedef struct DukeRendererDesc {
  * must be loaded. Missing tiles use a checkerboard. PALETTE.DAT and
  * LOOKUP.DAT must be present. Supports static sector surfaces, holes, slopes and portal wall
  * bands, parallax ceilings/floors (ceilingstat/floorstat mask 1), and
- * face/wall/floor sprites.
+ * face/wall/floor sprites, and version 9 TROR openings (including masked and
+ * approximately blended connecting surfaces). TROR geometry retains holes
+ * and slopes; it uses depth testing, not Build's recursive portal visibility.
  * Skies follow viewing direction, with the stock Duke panorama tile sequences;
  * their sector boundaries remain available for picking and selection.
  * Game effects, palette lookup variants and

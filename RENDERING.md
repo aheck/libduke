@@ -31,6 +31,8 @@ require window/input dependencies.
 Controls: W/S flies forward/backward along the look direction, including pitch.
 A/D strafes horizontally, and Shift increases speed.
 H toggles surface highlighting (off initially); the window title shows its state.
+T toggles opaque TROR diagnostic planes (off initially); `--tror-planes` enables
+them at startup. The title shows both settings.
 Highlighting follows the cursor when released and targets the center of the view
 while mouse look is captured.
 Click to capture the mouse for look; Escape releases it, then exits. Losing focus
@@ -78,6 +80,10 @@ this is not an independent Sokol device per renderer.
   Upper bands between two sky ceilings use sky, including unequal heights.
   Lower bands between two sky floors likewise use the floor's sky material.
 - Concave sector outlines and hole loops, triangulated by horizontal bands.
+- Version 9 TROR: connected ceilings/floors leave openings, including stacked
+  connections, sloped planes and holes. Masked connecting surfaces (stat 128)
+  retain their ART alpha cutouts; translucent ones (256/384) use approximate
+  2/3 or 1/3 alpha, with the same sorting limitations as translucent sprites.
 - Slopes, portal upper/lower wall bands, and alpha-tested masked walls.
 - Bottom texture swap (wall cstat 2): lower bands borrow the opposite wall’s
   texture, panning, shade and vertical alignment/flip. Repeats and horizontal
@@ -110,6 +116,40 @@ On Linux, when EGL 1.5 is available, `renderer-gl` also renders synthetic skies
 in an offscreen OpenGL context to verify panel order, translation independence,
 pitch, panning, vertical clamping and hover tint. It skips when no suitable
 context is available; no window or game data is required.
+
+## TROR openings and diagnostic planes
+
+Only explicit version 9 bunch connections open a ceiling or floor. Independent
+overlapping sectors are not interpreted as TROR. Renderer creation validates
+the TROR references; it does not mutate the map or turn bunch IDs into texture
+panning. Connected surfaces are retained in the snapshot so their display mode
+can change without rebuilding meshes or uploading textures:
+
+```c
+duke_renderer_set_tror_planes_visible(renderer, true);  /* diagnostic */
+duke_renderer_set_tror_planes_visible(renderer, false); /* normal (default) */
+```
+
+Diagnostic mode displays all connecting planes as solid black surfaces with a
+repeating olive-yellow `TROR` label, in the style of Mapster32's editor marker.
+The texture is generated internally and requires no additional ART files. It
+is full-bright, world-aligned and opaque, even where a map material is masked
+or translucent. Ordinary sector surfaces are unaffected. Each plane faces its
+own room, preventing coincident ceiling/floor surfaces from fighting for depth
+or returning the wrong picking identity.
+
+Normal mode lets picking pass through open connections. Masked connections
+respect alpha holes, while visible connecting materials and diagnostic planes
+can be hovered and selected as their owning floor/ceiling. Switching modes
+clears the old hover result and preserves selection; it never modifies map
+data. Hosts should expose this as a view setting, not an edit.
+
+TROR uses the inspection renderer's existing depth-buffer visibility, not
+Build's recursive sector traversal. Unrelated overlapping/effect geometry can
+still differ from EDuke32, and approximate translucent sorting is not exact
+order-independent rendering. There is no collision or TROR geometry editor.
+The tests cover stacked openings, slopes, holes, opaque diagnostic pixels,
+both-side picking, alpha cutouts and both blend weights in real offscreen GL.
 
 
 ## Optional surface hover
