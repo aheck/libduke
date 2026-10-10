@@ -159,7 +159,10 @@ if not get_option('renderer').disabled()
   renderer_lib = both_libraries('duke-render', ['src/lib/renderer.c', 'src/lib/sokol.c'],
     include_directories: [inc, sokol_inc], dependencies: renderer_deps,
     c_args: backend_args, install: true)
-  renderer_dep = declare_dependency(link_with: renderer_lib,
+  # Use the static renderer on Windows because MSVC does not automatically
+  # export its public API from the DLL, just as with the core library above.
+  renderer_link_lib = host_machine.system() == 'windows' ? renderer_lib.get_static_lib() : renderer_lib
+  renderer_dep = declare_dependency(link_with: renderer_link_lib,
     include_directories: [inc, sokol_inc], dependencies: renderer_deps)
   install_headers('include/libduke/renderer.h', 'third_party/sokol/sokol_gfx.h', subdir: 'libduke')
   if not get_option('viewer').disabled()
