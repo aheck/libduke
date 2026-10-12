@@ -127,6 +127,100 @@ static void sprite_tests(void) {
     duke_renderer_destroy(r);
 }
 
+/* Reference corners follow EDuke32 Polymost's floor/slope equations.
+ * Non-square ART and signed offset bytes catch accidental offset decoding. */
+static void sloped_sprite_tests(void) {
+    const int slopes[] = {0, 4096, -4096, 32767, -32768, 255, -1};
+    for (size_t n = 0; n < sizeof(slopes) / sizeof(slopes[0]); n++) {
+        for (int angle = 0; angle < 2048; angle += 512) {
+            for (int flip = 0; flip < 4; flip++) {
+                DukeRenderer *r = calloc(1, sizeof(*r));
+                assert(r);
+                r->textures[0].width = 65;
+                r->textures[0].height = 129;
+                r->textures[0].xoffset = 3;
+                r->textures[0].yoffset = -5;
+                const unsigned bits = (unsigned)slopes[n] & 65535;
+                DukeMapSprite s = {.x = 200, .y = -300, .z = -8192,
+                    .ang = angle, .cstat = 48 | 64 | (flip << 2),
+                    .xrepeat = 32, .yrepeat = 64,
+                    .xoffset = (int8_t)(bits & 255), .yoffset = (int8_t)(bits >> 8)};
+                assert(sprite_quad(r, &s, 0));
+                assert(r->count == 6 && r->draws[0].one_sided);
+                const double cs[] = {1, 0, -1, 0}, sn[] = {0, 1, 0, -1};
+                const double c = cs[angle / 512], a = sn[angle / 512];
+                const double ratio = 4096.0 / hypot(4096.0, slopes[n]);
+                for (int j = 0; j < 6; j++) {
+                    const Vertex *v = &r->vertices[j];
+                    const double u = flip & 1 ? 1 - v->uv[0] : v->uv[0];
+                    const double t = v->uv[1];
+                    const double across = (32 + (flip & 1 ? -3 : 3) - 65 * u) * 8;
+                    const double along = (64 + (flip & 2 ? 5 : -5) - 129 * t) * 16 * ratio;
+                    assert(fabs(v->p[0] * 1024 - (200 + a * across + c * along)) < 0.001);
+                    assert(fabs(v->p[2] * 1024 - (-300 - c * across + a * along)) < 0.001);
+                    assert(fabs(v->p[1] * 16384 - (8192 + slopes[n] * along / 256)) < 0.01);
+                    assert(v->billboard[0] == 0 && v->billboard[1] == 0);
+                }
+                const Vertex *v = r->vertices;
+                const double up = (v[1].p[2] - v[0].p[2]) * (v[2].p[0] - v[0].p[0])
+                                - (v[1].p[0] - v[0].p[0]) * (v[2].p[2] - v[0].p[2]);
+                assert((up > 0) == !(flip & 2));
+                /* Pick the triangle centroid from its visible side, then
+                 * verify that the opposite side is rejected. */
+                const float identity[16] = {1, 0, 0, 0, 0, 1, 0, 0,
+                                            0, 0, 1, 0, 0, 0, 0, 1};
+                const double side = flip & 2 ? -1 : 1;
+                double origin[3], direction[3] = {0, -side, 0};
+                for (int k = 0; k < 3; k++) {
+                    origin[k] = (v[0].p[k] + v[1].p[k] + v[2].p[k]) / 3.0;
+                }
+                origin[1] += side * 2;
+                r->sprite_picking = true;
+                double nearest = 10;
+                pick_draw(r, &r->draws[0], identity, origin, direction, &nearest);
+                assert(fabs(nearest - 2) < 0.00001);
+                assert(r->hit.kind == DUKE_SURFACE_SPRITE);
+                origin[1] -= side * 4;
+                direction[1] = side;
+                nearest = 10;
+                pick_draw(r, &r->draws[0], identity, origin, direction, &nearest);
+                assert(nearest == 10);
+                duke_renderer_destroy(r);
+            }
+        }
+    }
+    /* Returning to zero slope must not change texture orientation or pivot. */
+    for (int flip = 0; flip < 4; flip++) {
+        DukeRenderer *r = calloc(1, sizeof(*r));
+        assert(r);
+        r->textures[0].width = 65;
+        r->textures[0].height = 129;
+        r->textures[0].xoffset = 3;
+        r->textures[0].yoffset = -5;
+        DukeMapSprite s = {.cstat = 48 | (flip << 2), .xrepeat = 64, .yrepeat = 64};
+        assert(sprite_quad(r, &s, 0));
+        s.cstat = 32 | (flip << 2);
+        assert(sprite_quad(r, &s, 0));
+        assert(memcmp(r->vertices, r->vertices + 6, 6 * sizeof(Vertex)) == 0);
+        duke_renderer_destroy(r);
+    }
+    /* Exercise the collection path, which previously discarded alignment 48. */
+    DukeRenderer *r = calloc(1, sizeof(*r));
+    assert(r);
+    r->textures[0].width = 64;
+    r->textures[0].height = 128;
+    r->textures[TILE_COUNT].width = 64;
+    r->textures[TILE_COUNT].height = 128;
+    DukeMapSprite s = {.cstat = 48, .xrepeat = 64, .yrepeat = 64, .yoffset = 16};
+    DukeMapSprite *list[] = {&s};
+    DukeMapFile m = {.numsprites = 1, .numsectors = 1, .sprites = list};
+    Source src = {0};
+    assert(sprites(r, &src, &m));
+    assert(r->draw_count == 1 && r->draws[0].surface == DUKE_SURFACE_SPRITE);
+    assert(r->draws[0].sprite_index == 0);
+    duke_renderer_destroy(r);
+}
+
 static void hover_plane(DukeRenderer *r, float z, int wall, int tile) {
     Vertex a = {.p = {-0.8f, -0.8f, z}, .uv = {0, 0}, .alpha = 1}, b = a, c = a,
            d = a;
@@ -626,6 +720,7 @@ int main(void) {
     sky_tests(false);
     sky_tests(true);
     sprite_tests();
+    sloped_sprite_tests();
     hover_tests();
     const int ring[][2] = {{0, 0},       {4096, 0},    {4096, 4096},
                            {0, 4096},    {1024, 1024}, {1024, 3072},

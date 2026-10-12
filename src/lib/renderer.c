@@ -800,7 +800,16 @@ static bool sprite_quad(DukeRenderer *r, const DukeMapSprite *s, int tile) {
     int alignment = s->cstat & 48;
     double angle = s->ang * (6.283185307179586 / 2048.0);
     double rx = sin(angle), ry = -cos(angle);
-    double xoff = t->xoffset + s->xoffset, yoff = t->yoffset + s->yoffset;
+    const bool sloped = alignment == 48;
+    const bool floor_aligned = (alignment & 32) != 0;
+    /* EDuke32 build.h: spriteGetSlope stores a signed little-endian slope in
+     * the two sprite offset bytes. ART offsets still apply to sloped sprites. */
+    const unsigned packed = (uint8_t)s->xoffset | ((unsigned)(uint8_t)s->yoffset << 8);
+    const int slope = sloped ? (packed >= 32768 ? (int)packed - 65536 : (int)packed) : 0;
+    const double incline = slope / 4096.0;
+    const double ratio = 1.0 / sqrt(1.0 + incline * incline);
+    double xoff = t->xoffset + (sloped ? 0 : s->xoffset);
+    double yoff = t->yoffset + (sloped ? 0 : s->yoffset);
     if (s->cstat & 4) {
         xoff = -xoff;
     }
@@ -815,7 +824,16 @@ static bool sprite_quad(DukeRenderer *r, const DukeMapSprite *s, int tile) {
         double y =
             (texv * t->height - t->height * 0.5 - yoff) * s->yrepeat / 4.0;
         double z = s->z;
-        if (alignment != 32) {
+        if (floor_aligned) {
+            /* Match Polymost's floor/slope corner basis, including the integer
+             * pivot for odd tile sizes. Foreshorten the XY footprint so the
+             * sprite keeps its physical length as the incline changes.
+             * Build Z is 16 times the XY scale; heinum 4096 is 45 degrees. */
+            x = (t->width / 2 + xoff - u * t->width) * s->xrepeat / 4.0;
+            y = (t->height / 2 + yoff - texv * t->height) * s->yrepeat / 4.0 * ratio;
+            z -= slope * y / 256.0;
+        }
+        if (!floor_aligned) {
             z += ((texv - 1) * t->height - yoff +
                   ((s->cstat & 128) ? t->height * 0.5 : 0)) *
                  s->yrepeat * 4.0;
@@ -823,7 +841,9 @@ static bool sprite_quad(DukeRenderer *r, const DukeMapSprite *s, int tile) {
         if (s->cstat & 4) {
             u = 1 - u;
         }
-        if (s->cstat & 8) {
+        /* For EDuke32 sloped floor sprites Y flip selects the visible side
+         * and flips the ART pivot, but does not reverse texture V. */
+        if ((s->cstat & 8) && !floor_aligned) {
             texv = 1 - texv;
         }
         if (alignment == 0) {
@@ -842,7 +862,7 @@ static bool sprite_quad(DukeRenderer *r, const DukeMapSprite *s, int tile) {
     }
     /* Front faces: wall sprites face along their Build angle;
      * floor sprites face up, or down when Y-flipped. */
-    bool reverse = alignment != 32 || !(s->cstat & 8);
+    bool reverse = !floor_aligned || !(s->cstat & 8);
     const int order[6] = {0, 1, 2, 0, 2, 3};
     for (int j = 0; j < 6; j++) {
         v[j] = q[order[reverse ? (j / 3 * 3 + 2 - j % 3) : j]];
@@ -863,7 +883,7 @@ static bool sprites(DukeRenderer *r, Source *src, const DukeMapFile *m) {
     for (int i = 0; i < m->numsprites; i++) {
         const DukeMapSprite *s = m->sprites[i];
         if ((s->cstat & 32768) || !s->xrepeat || !s->yrepeat ||
-            (s->cstat & 48) == 48 || s->sectnum < 0 ||
+            s->sectnum < 0 ||
             s->sectnum >= m->numsectors || s->statnum == MAP_MAXSTATUS) {
             continue;
         }
