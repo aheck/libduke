@@ -711,6 +711,27 @@ static void tror_geometry_tests(void) {
     duke_renderer_set_tror_planes_visible(NULL, true);
 }
 
+static void missing_sprite_palette_tests(void) {
+    DukeRenderer *r = calloc(1, sizeof(*r));
+    assert(r);
+    const uint8_t rgba[] = {255, 255, 255, 255};
+    assert(upload(&r->textures[0], 1, 1, rgba));
+    DukePaletteLookupFile lookup = {0};
+    Source src = {.lookup = &lookup};
+    DukeMapSprite sprite = {.picnum = 0, .pal = 27,
+                            .xrepeat = 64, .yrepeat = 64};
+    DukeMapSprite *list[] = {&sprite};
+    DukeMapFile map = {.numsprites = 1, .numsectors = 1, .sprites = list};
+    assert(sprites(r, &src, &map));
+    assert(r->draw_count == 1 && r->draws[0].tile == 0);
+    assert(r->variant_count == 0);
+    assert(sprite.pal == 27);
+    /* A missing lookup object also retains the already loaded base tile. */
+    src.lookup = NULL;
+    assert(texture_variant(r, &src, 0, 29) == 0);
+    duke_renderer_destroy(r);
+}
+
 int main(void) {
     sg_setup(&(sg_desc){0});
     tror_geometry_tests();
@@ -720,6 +741,7 @@ int main(void) {
     sky_tests(false);
     sky_tests(true);
     sprite_tests();
+    missing_sprite_palette_tests();
     sloped_sprite_tests();
     hover_tests();
     const int ring[][2] = {{0, 0},       {4096, 0},    {4096, 4096},

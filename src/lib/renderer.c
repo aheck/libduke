@@ -206,7 +206,15 @@ static int texture_variant(DukeRenderer *r, Source *s, int tile, int palette) {
             return TILE_COUNT + 1 + (int)i;
         }
     }
-    if (palette == 0) return tile;
+    if (palette == 0) {
+        return tile;
+    }
+    /* Maps can reference game-generated or mod-specific palettes absent from
+     * LOOKUP.DAT. Keep their base texture renderable without altering map data. */
+    uint8_t mapped;
+    if (!duke_palette_lookup_get_index(s->lookup, palette, 0, &mapped)) {
+        return tile;
+    }
     for (size_t i = s->count; i > 0; i--) {
         DukeArtTile *a = duke_art_get_tile_by_number(s->art[i - 1], tile);
         if (!a || a->width <= 0 || a->height <= 0) continue;
