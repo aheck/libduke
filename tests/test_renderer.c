@@ -499,8 +499,7 @@ static void wall_alignment_tests(void) {
             m->walls[0]->cstat = aligned ? 4 : 0;
             size_t first = r->count;
             assert(wall_quad(r, &src, m, 0, 0, top, bottom, 10, bands[band]));
-            assert(r->draws[r->draw_count - 1].one_sided ==
-                   (bands[band] == WALL_MASKED || bands[band] == WALL_ONE_WAY));
+            assert(r->draws[r->draw_count - 1].one_sided);
             assert(fabs(r->vertices[first].uv[1] - (top[0] - origins[band][aligned]) / 8192.0) < 1e-6);
             /* Equal world heights have equal V despite a sloped upper edge. */
             assert(fabs(r->vertices[first + 2].uv[1] - r->vertices[first + 5].uv[1]) < 1e-6);

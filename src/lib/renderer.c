@@ -37,7 +37,7 @@ typedef struct TextureVariant {
 } TextureVariant;
 typedef struct Draw {
     int first, count, tile;
-    bool sprite, translucent, one_sided, selected;
+    bool sprite, aligned_sprite, translucent, one_sided, selected;
     float center[3], depth;
     DukeSurfaceKind surface;
     int sector, wall, sprite_index;
@@ -65,7 +65,7 @@ struct DukeRenderer {
     sg_shader shader;
     sg_pipeline pipeline;
     sg_pipeline one_sided_wall_pipeline;
-    sg_pipeline sprite_pipelines[4];
+    sg_pipeline sprite_pipelines[8];
     sg_sampler sampler;
     sg_sampler sky_sampler;
     sg_buffer buffer;
@@ -731,7 +731,10 @@ static bool wall_quad(DukeRenderer *r, Source *src, const DukeMapFile *m,
     d->surface = DUKE_SURFACE_WALL;
     d->sector = sector;
     d->wall = w;
-    d->one_sided = band == WALL_MASKED || band == WALL_ONE_WAY;
+    /* Every Build wall faces into its owning sector, including solid and
+     * portal-height bands. Drawing their backs makes coincident boundaries
+     * in neighboring/stacked rooms fight for depth and return wrong pick IDs. */
+    d->one_sided = true;
     if (sky) {
         /* Unequal sky surfaces meet at a sky curtain, not a textured wall.
          * Keep this boundary filled so the host's clear color cannot leak in. */
@@ -880,6 +883,7 @@ static bool sprite_quad(DukeRenderer *r, const DukeMapSprite *s, int tile) {
     }
     Draw *d = &r->draws[r->draw_count - 1];
     d->sprite = true;
+    d->aligned_sprite = alignment != 0;
     d->translucent = (s->cstat & 2) != 0;
     d->one_sided = alignment != 0 && (s->cstat & 64) != 0;
     d->center[0] = s->x / 1024.0f;
@@ -1241,7 +1245,10 @@ static void pick_draw(DukeRenderer *r, const Draw *d, const float mvp[16],
         }
         cross3(dir, e2, h);
         double det = dot3(e1, h);
-        if (fabs(det) < 1e-12 || (d->one_sided && det <= 0)) {
+        /* Wall quads face the room with clockwise winding; sprites and
+         * horizontal TROR planes use the opposite ray-facing convention. */
+        const bool backface = !d->sprite && !d->tror ? det >= 0 : det <= 0;
+        if (fabs(det) < 1e-12 || (d->one_sided && backface)) {
             continue;
         }
         double u = dot3(s, h) / det;
@@ -1407,9 +1414,14 @@ static bool pipeline(DukeRenderer *r, const DukeRendererDesc *desc) {
     if (sg_query_pipeline_state(r->one_sided_wall_pipeline) != SG_RESOURCESTATE_VALID) {
         return false;
     }
-    for (int i = 0; i < 4; i++) {
+    for (int i = 0; i < 8; i++) {
         bool translucent = (i & 1) != 0;
         p.depth.write_enabled = !translucent;
+        /* Flat sprites are also used as decals directly on sector surfaces.
+         * Offset only their rasterized depth, including at oblique angles;
+         * billboards and TROR planes retain the ordinary depth calculation. */
+        p.depth.bias = (i & 4) ? -1.0f : 0.0f;
+        p.depth.bias_slope_scale = (i & 4) ? -1.0f : 0.0f;
         p.cull_mode = (i & 2) ? SG_CULLMODE_BACK : SG_CULLMODE_NONE;
         p.face_winding = SG_FACEWINDING_CCW;
         p.colors[0].blend = (sg_blend_state){
@@ -1557,7 +1569,7 @@ void duke_renderer_draw(DukeRenderer *r, const float mvp[16]) {
         }
         sg_pipeline selected =
             (d.sprite || d.tror) ? r->sprite_pipelines[(d.translucent ? 1 : 0) |
-                                           (d.one_sided ? 2 : 0)]
+                                           (d.one_sided ? 2 : 0) | (d.aligned_sprite ? 4 : 0)]
                      : d.one_sided ? r->one_sided_wall_pipeline
                      : r->pipeline;
         if (selected.id != current.id) {
@@ -1599,7 +1611,7 @@ void duke_renderer_destroy(DukeRenderer *r) {
     if (r->one_sided_wall_pipeline.id) {
         sg_destroy_pipeline(r->one_sided_wall_pipeline);
     }
-    for (int i = 0; i < 4; i++) {
+    for (int i = 0; i < 8; i++) {
         if (r->sprite_pipelines[i].id) {
             sg_destroy_pipeline(r->sprite_pipelines[i]);
         }

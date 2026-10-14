@@ -276,6 +276,137 @@ static void tror_pixels(void) {
     }
 }
 
+/* Opposite walls may share a plane without being a portal (touching rooms).
+ * Different diagonals and camera motion must not reveal the other room's
+ * material, and picking must agree with the side that is actually visible. */
+static void touching_wall_pixels(void) {
+    const WallBand bands[] = {WALL_SOLID, WALL_UPPER, WALL_LOWER,
+                              WALL_MASKED, WALL_ONE_WAY};
+    for (int band = 0; band < 5; ++band) {
+        DukeMapSector sector = {.ceilingz = -16384, .floorz = 0};
+        DukeMapSector *sectors[] = {&sector};
+        DukeMapWall walls[] = {
+            {.x = -4096, .y = 0, .point2 = 1, .nextsector = -1, .nextwall = -1},
+            {.x = 4096, .y = 0, .point2 = 0, .nextsector = -1, .nextwall = -1}};
+        DukeMapWall *wp[] = {&walls[0], &walls[1]};
+        DukeMapFile map = {.numsectors = 1, .numwalls = 2,
+                            .sectors = sectors, .walls = wp};
+        DukeRenderer *r = calloc(1, sizeof(*r));
+        assert(r);
+        const uint8_t red[] = {255, 0, 0, 255}, green[] = {0, 255, 0, 255};
+        assert(upload(&r->textures[0], 1, 1, red));
+        assert(upload(&r->textures[1], 1, 1, green));
+        Source src = {0};
+        double top[] = {-16384, -16384}, bottom[] = {0, 0};
+        assert(wall_quad(r, &src, &map, 0, 0, top, bottom, 0, bands[band]));
+        assert(wall_quad(r, &src, &map, 0, 1, top, bottom, 1, bands[band]));
+        const DukeRendererDesc desc = {.color_format = SG_PIXELFORMAT_RGBA8,
+            .depth_format = SG_PIXELFORMAT_DEPTH_STENCIL, .sample_count = 1};
+        assert(pipeline(r, &desc));
+        r->buffer = sg_make_buffer(&(sg_buffer_desc){
+            .data = {r->vertices, r->count * sizeof(Vertex)}});
+        assert(sg_query_buffer_state(r->buffer) == SG_RESOURCESTATE_VALID);
+        assert(build_picking(r));
+        for (int side = 0; side < 2; ++side) {
+            for (int step = 0; step < 9; ++step) {
+                DukeCamera camera;
+                duke_camera_init(&camera);
+                camera.position[0] = (step - 4) * 0.137f;
+                camera.position[1] = 0.5f;
+                camera.position[2] = side ? -1.0f : 1.0f;
+                camera.yaw = side ? 1.5707963268f : -1.5707963268f;
+                camera.vertical_fov = 0.25f;
+                uint8_t pixels[SIZE * SIZE * 4];
+                frame(r, &camera, pixels);
+                for (int i = 0; i < SIZE * SIZE; ++i) {
+                    assert(pixels[i * 4 + side] == 255);
+                    assert(pixels[i * 4 + (1 - side)] == 0);
+                    assert(pixels[i * 4 + 2] == 0);
+                }
+                float mvp[16];
+                assert(duke_camera_view_projection(&camera, 1, mvp));
+                r->hover_enabled = r->pointer_valid = true;
+                update_hover(r, mvp);
+                DukeSurfaceHit hit = r->hit;
+                r->hover_enabled = false;
+                assert(hit.kind == DUKE_SURFACE_WALL && hit.wall_index == side);
+            }
+        }
+        duke_renderer_destroy(r);
+    }
+}
+
+/* Decals share depth with their supporting surface. Exercise changing camera
+ * angles, transparency, and a truly occluded sprite so the offset cannot turn
+ * into an always-on-top overlay. */
+static void decal_pixels(void) {
+    for (int floor = 0; floor < 2; ++floor) {
+        for (int material = 0; material < 3; ++material) {
+            for (int hidden = 0; hidden < 2; ++hidden) {
+                DukeRenderer *r = calloc(1, sizeof(*r));
+                assert(r);
+                const uint8_t green[] = {0, 255, 0, 255};
+                uint8_t red[128 * 128 * 4];
+                for (int i = 0; i < 128 * 128; ++i) {
+                    red[i * 4] = 255;
+                    red[i * 4 + 1] = red[i * 4 + 2] = 0;
+                    red[i * 4 + 3] = material == 1 ? 0 : 255;
+                }
+                assert(upload(&r->textures[0], 1, 1, green));
+                assert(upload(&r->textures[1], 128, 128, red));
+                DukeMapSector sector = {.wallnum = 4, .ceilingz = -16384,
+                    .floorz = 0, .floorpicnum = 0, .ceilingpicnum = 0};
+                DukeMapSector *sectors[] = {&sector};
+                DukeMapWall walls[] = {
+                    {.x = -4096, .y = 0, .point2 = 1, .nextsector = -1, .nextwall = -1},
+                    {.x = 4096, .y = 0, .point2 = 2, .nextsector = -1, .nextwall = -1},
+                    {.x = 4096, .y = 8192, .point2 = 3, .nextsector = -1, .nextwall = -1},
+                    {.x = -4096, .y = 8192, .point2 = 0, .nextsector = -1, .nextwall = -1}};
+                DukeMapWall *wp[] = {walls, walls + 1, walls + 2, walls + 3};
+                DukeMapFile map = {.numsectors = 1, .numwalls = 4,
+                    .sectors = sectors, .walls = wp};
+                Source src = {0};
+                if (floor) {
+                    assert(floors(r, &src, &map, 0));
+                } else {
+                    double top[] = {-16384, -16384}, bottom[] = {0, 0};
+                    assert(wall_quad(r, &src, &map, 0, 0, top, bottom, 0, WALL_SOLID));
+                }
+                DukeMapSprite sprite = {.x = 0, .y = floor ? 4096 : (hidden ? -32 : 0),
+                    .z = floor ? (hidden ? 512 : 0) : -8192,
+                    .ang = 512, .cstat = (floor ? 32 : 16) | 128 | (material == 2 ? 2 : 0),
+                    .xrepeat = 128, .yrepeat = 128};
+                assert(sprite_quad(r, &sprite, 1));
+                const DukeRendererDesc desc = {.color_format = SG_PIXELFORMAT_RGBA8,
+                    .depth_format = SG_PIXELFORMAT_DEPTH_STENCIL, .sample_count = 1};
+                assert(pipeline(r, &desc));
+                r->buffer = sg_make_buffer(&(sg_buffer_desc){
+                    .data = {r->vertices, r->count * sizeof(Vertex)}});
+                assert(sg_query_buffer_state(r->buffer) == SG_RESOURCESTATE_VALID);
+                for (int step = 0; step < 12; ++step) {
+                    DukeCamera camera;
+                    duke_camera_init(&camera);
+                    camera.position[0] = (step - 5) * 0.071f;
+                    camera.position[1] = 0.5f;
+                    camera.position[2] = floor ? 3.0f : 1.0f;
+                    camera.yaw = (floor ? 1 : -1) * 1.5707963268f + (step - 5) * 0.01f;
+                    camera.pitch = floor ? -0.5f : (step - 5) * 0.01f;
+                    camera.vertical_fov = 0.15f;
+                    uint8_t pixels[SIZE * SIZE * 4];
+                    frame(r, &camera, pixels);
+                    const int expected = hidden || material == 1 ? 0 : material == 2 ? 170 : 255;
+                    for (int i = 0; i < SIZE * SIZE; ++i) {
+                        assert(abs(pixels[i * 4] - expected) <= 1);
+                        assert(abs(pixels[i * 4 + 1] - (255 - expected)) <= 1);
+                        assert(pixels[i * 4 + 2] == 0);
+                    }
+                }
+                duke_renderer_destroy(r);
+            }
+        }
+    }
+}
+
 int main(void) {
     EGLDisplay display = eglGetPlatformDisplay(EGL_PLATFORM_SURFACELESS_MESA,
                                                EGL_DEFAULT_DISPLAY, NULL);
@@ -315,6 +446,8 @@ int main(void) {
     sky_wrap_pixels(false, 89);
     sky_wrap_pixels(true, 89);
     tror_pixels();
+    touching_wall_pixels();
+    decal_pixels();
     sg_shutdown();
     eglMakeCurrent(display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
     eglDestroySurface(display, surface);
