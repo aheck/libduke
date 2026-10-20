@@ -239,7 +239,7 @@ bool duke_art_read_tiles_full(DukeArtFile *file)
     }
     for (uint32_t i = 0; i < g_list_length(file->tiles); i++) {
         void *data;
-        if (duke_art_get_tile_data_by_index(file, i, &data) == (size_t) -1) {
+        if (!duke_art_get_tile_data_by_index(file, i, &data, NULL)) {
             return false;
         }
     }
@@ -288,8 +288,8 @@ DukeArtTile* duke_art_get_tile_by_number(DukeArtFile *file, int32_t tile_number)
         (uint32_t) (tile_number - file->header.localtilestart));
 }
 
-size_t duke_art_get_tile_data_by_index(DukeArtFile *file, uint32_t index,
-    void **data)
+bool duke_art_get_tile_data_by_index(DukeArtFile *file, uint32_t index,
+    void **data, size_t *data_size)
 {
     DukeArtTile *tile;
     uint32_t size;
@@ -297,20 +297,26 @@ size_t duke_art_get_tile_data_by_index(DukeArtFile *file, uint32_t index,
     if (file == NULL || data == NULL
             || (tile = duke_art_get_tile_by_index(file, index)) == NULL
             || !tile_size(tile, &size)) {
-        return -1;
+        return false;
     }
     if (tile->data != NULL) {
         *data = tile->data;
-        return size;
+        if (data_size != NULL) {
+            *data_size = size;
+        }
+        return true;
     }
     if (size == 0) {
         *data = NULL;
-        return 0;
+        if (data_size != NULL) {
+            *data_size = 0;
+        }
+        return true;
     }
     if (file->input == NULL || !duke_input_seek(file->input,
             file->data_section_offset + tile->data_offset)) {
         set_error(file, "failed to seek to tile %d", tile->tile_number);
-        return -1;
+        return false;
     }
     tile->data = malloc(size == 0 ? 1 : size);
     if (tile->data == NULL
@@ -318,20 +324,23 @@ size_t duke_art_get_tile_data_by_index(DukeArtFile *file, uint32_t index,
         free(tile->data);
         tile->data = NULL;
         set_error(file, "failed to read tile %d", tile->tile_number);
-        return -1;
+        return false;
     }
     *data = tile->data;
-    return size;
+    if (data_size != NULL) {
+        *data_size = size;
+    }
+    return true;
 }
 
-size_t duke_art_get_tile_data_by_number(DukeArtFile *file, int32_t tile_number,
-    void **data)
+bool duke_art_get_tile_data_by_number(DukeArtFile *file, int32_t tile_number,
+    void **data, size_t *data_size)
 {
     if (file == NULL || tile_number < file->header.localtilestart) {
-        return -1;
+        return false;
     }
     return duke_art_get_tile_data_by_index(file,
-        (uint32_t) (tile_number - file->header.localtilestart), data);
+        (uint32_t) (tile_number - file->header.localtilestart), data, data_size);
 }
 
 static DukeArtTile *empty_tile(int32_t tile_number)
@@ -442,7 +451,7 @@ bool duke_art_write_filename(DukeArtFile *file, const char *filename)
     }
     for (uint32_t i = 0; i < count; i++) {
         void *data;
-        if (duke_art_get_tile_data_by_index(file, i, &data) == (size_t) -1) {
+        if (!duke_art_get_tile_data_by_index(file, i, &data, NULL)) {
             return false;
         }
     }

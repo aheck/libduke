@@ -134,8 +134,7 @@ static bool write_tile(DukeArtFile *art, int32_t tile_number)
         fprintf(stderr, "ERROR: Tile %d is not in this ART file\n", tile_number);
         return false;
     }
-    size = duke_art_get_tile_data_by_number(art, tile_number, &data);
-    if (size == (size_t) -1) {
+    if (!duke_art_get_tile_data_by_number(art, tile_number, &data, &size)) {
         fprintf(stderr, "ERROR: %s\n", art->last_error);
         return false;
     }

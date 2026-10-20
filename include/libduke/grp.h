@@ -99,11 +99,13 @@ DukeGrpFileEntry* duke_grp_get_entry_by_index(DukeGrpFile *file, uint32_t index)
  * @param data Receives a library-owned pointer to the cached entry contents.
  * The pointer remains valid until entries are reloaded, the archive is closed,
  * or the archive object is freed.
- * @return The entry size in bytes, including zero for an empty entry, or
- * `(size_t)-1` if the arguments or index are invalid or the data cannot be read.
+ * @param data_size Receives the data size in bytes, including zero for an
+ * empty entry. May be `NULL` if the size is not needed.
+ * @return `true` on success; `false` for invalid arguments, an unavailable
+ * entry, or a read or allocation failure. Outputs are unchanged on failure.
  */
-size_t duke_grp_get_file_data_by_index(DukeGrpFile *file, uint32_t index,
-    void **data);
+bool duke_grp_get_file_data_by_index(DukeGrpFile *file, uint32_t index,
+    void **data, size_t *data_size);
 
 /**
  * @brief Retrieve and, if necessary, load an entry's contents by filename.
@@ -115,11 +117,13 @@ size_t duke_grp_get_file_data_by_index(DukeGrpFile *file, uint32_t index,
  * @param data Receives a library-owned pointer to the cached entry contents.
  * The pointer remains valid until entries are reloaded, the archive is closed,
  * or the archive object is freed.
- * @return The entry size in bytes, including zero for an empty entry, or
- * `(size_t)-1` if no matching entry exists or the data cannot be read.
+ * @param data_size Receives the data size in bytes, including zero for an
+ * empty entry. May be `NULL` if the size is not needed.
+ * @return `true` on success; `false` for invalid arguments, an unavailable
+ * entry, or a read or allocation failure. Outputs are unchanged on failure.
  */
-size_t duke_grp_get_file_data_by_filename(DukeGrpFile *file,
-    const char *filename, void **data);
+bool duke_grp_get_file_data_by_filename(DukeGrpFile *file,
+    const char *filename, void **data, size_t *data_size);
 
 /**
  * @brief Clear the archive's most recent error message.

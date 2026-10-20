@@ -158,8 +158,8 @@ static bool source_load(Source *s, DukeGrpFile *grp) {
             continue;
         }
         void *data = NULL;
-        size_t size = duke_grp_get_file_data_by_index(grp, i, &data);
-        if (size == (size_t)-1) {
+        size_t size;
+        if (!duke_grp_get_file_data_by_index(grp, i, &data, &size)) {
             return false;
         }
         if (palette) {
@@ -219,8 +219,10 @@ static int texture_variant(DukeRenderer *r, Source *s, int tile, int palette) {
         DukeArtTile *a = duke_art_get_tile_by_number(s->art[i - 1], tile);
         if (!a || a->width <= 0 || a->height <= 0) continue;
         void *pixels = NULL;
-        size_t size = duke_art_get_tile_data_by_number(s->art[i - 1], tile, &pixels);
-        if (size == (size_t)-1) return -1;
+        size_t size;
+        if (!duke_art_get_tile_data_by_number(s->art[i - 1], tile, &pixels, &size)) {
+            return -1;
+        }
         size_t count = (size_t)a->width * a->height;
         uint8_t *mapped = malloc(count), *rgba = malloc(count * 4);
         if (!mapped || !rgba) { free(mapped); free(rgba); return -1; }
@@ -292,9 +294,8 @@ static int texture(DukeRenderer *r, Source *s, int tile) {
         }
 
         void *pixels = NULL;
-        size_t size =
-            duke_art_get_tile_data_by_number(s->art[i - 1], tile, &pixels);
-        if (size == (size_t)-1) {
+        size_t size;
+        if (!duke_art_get_tile_data_by_number(s->art[i - 1], tile, &pixels, &size)) {
             return -1;
         }
 
@@ -365,8 +366,7 @@ static int sky_texture(DukeRenderer *r, Source *src, int picnum, int tile) {
             }
         }
         void *data = NULL;
-        if (owner && duke_art_get_tile_data_by_number(owner, number, &data) ==
-                         (size_t)-1) {
+        if (owner && !duke_art_get_tile_data_by_number(owner, number, &data, NULL)) {
             free(rgba);
             return -1;
         }

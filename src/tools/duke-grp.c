@@ -96,8 +96,7 @@ static bool write_member(DukeGrpFile *file, uint32_t index)
             entry == NULL ? "(missing entry)" : entry->filename);
         return false;
     }
-    size = duke_grp_get_file_data_by_index(file, index, &data);
-    if (size == (size_t) -1) {
+    if (!duke_grp_get_file_data_by_index(file, index, &data, &size)) {
         fprintf(stderr, "ERROR: Failed to read %s from archive\n", entry->filename);
         return false;
     }
@@ -467,8 +466,7 @@ static bool write_archive(DukeGrpFile *file, const char *archive_name,
             data = (void *) new_data;
             size = new_size;
         } else {
-            size = duke_grp_get_file_data_by_index(file, i, &data);
-            if (size == (size_t) -1) {
+            if (!duke_grp_get_file_data_by_index(file, i, &data, &size)) {
                 fprintf(stderr, "ERROR: Failed to read %s from archive\n",
                     entry->filename);
                 goto cleanup;

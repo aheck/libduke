@@ -162,11 +162,13 @@ DukeArtTile* duke_art_get_tile_by_number(DukeArtFile *file, int32_t tile_number)
  * @param data Receives a library-owned pixel buffer, or `NULL` for an empty
  * tile. A non-`NULL` buffer remains valid until the tile is changed or cleared,
  * tiles are reloaded, the file is closed, or the object is freed.
- * @return The pixel-data size (`width * height`) in bytes, including zero for
- * an empty tile, or `(size_t)-1` if the tile is invalid or cannot be read.
+ * @param data_size Receives the data size in bytes, including zero for an
+ * empty tile. May be `NULL` if the size is not needed.
+ * @return `true` on success; `false` for invalid arguments, an unavailable
+ * tile, or a read or allocation failure. Outputs are unchanged on failure.
  */
-size_t duke_art_get_tile_data_by_index(DukeArtFile *file, uint32_t index,
-    void **data);
+bool duke_art_get_tile_data_by_index(DukeArtFile *file, uint32_t index,
+    void **data, size_t *data_size);
 
 /**
  * @brief Retrieve and, if necessary, load a tile's pixels by tile number.
@@ -176,11 +178,13 @@ size_t duke_art_get_tile_data_by_index(DukeArtFile *file, uint32_t index,
  * @param data Receives a library-owned pixel buffer, or `NULL` for an empty
  * tile. Its lifetime matches that described by
  * duke_art_get_tile_data_by_index().
- * @return The pixel-data size in bytes, including zero for an empty tile, or
- * `(size_t)-1` if the tile is unavailable or cannot be read.
+ * @param data_size Receives the data size in bytes, including zero for an
+ * empty tile. May be `NULL` if the size is not needed.
+ * @return `true` on success; `false` for invalid arguments, an unavailable
+ * tile, or a read or allocation failure. Outputs are unchanged on failure.
  */
-size_t duke_art_get_tile_data_by_number(DukeArtFile *file, int32_t tile_number,
-    void **data);
+bool duke_art_get_tile_data_by_number(DukeArtFile *file, int32_t tile_number,
+    void **data, size_t *data_size);
 
 /**
  * @brief Add or replace a tile, copying the supplied pixel data.

@@ -12,6 +12,7 @@ START_TEST(test_art_round_trip_and_manipulation)
     const uint8_t tile_12[] = { 9, 8, 7, 6 };
     char filename[128];
     void *data = NULL;
+    size_t size;
 
     snprintf(filename, sizeof(filename), "libduke-art-%ld.art",
         (long) test_process_id());
@@ -43,12 +44,18 @@ START_TEST(test_art_round_trip_and_manipulation)
     ck_assert_int_eq(tile->width, 1);
     ck_assert_int_eq(tile->height, 4);
     ck_assert_uint_eq(tile->picanm, 0x89abcdef);
-    ck_assert_uint_eq(duke_art_get_tile_data_by_number(art, 12, &data), 4);
+    ck_assert(duke_art_get_tile_data_by_number(art, 12, &data, &size));
+    ck_assert_uint_eq(size, 4);
     ck_assert_int_eq(memcmp(data, tile_12, sizeof(tile_12)), 0);
 
     ck_assert(duke_art_clear_tile(art, 12));
     ck_assert_int_eq(tile->width, 0);
     ck_assert_int_eq(tile->height, 0);
+    ck_assert(duke_art_get_tile_data_by_number(art, 12, &data, &size));
+    ck_assert_uint_eq(size, 0);
+    ck_assert(duke_art_get_tile_data_by_index(art, 0, &data, NULL));
+    ck_assert(!duke_art_get_tile_data_by_number(art, 13, &data, &size));
+    ck_assert_uint_eq(size, 0);
     duke_art_free(art);
     ck_assert_int_eq(remove(filename), 0);
 }
@@ -62,6 +69,7 @@ START_TEST(test_art_open_memory_copies_buffer)
     };
     const uint8_t expected_pixels[] = { 1, 2, 3, 4 };
     void *pixels = NULL;
+    size_t size;
     DukeArtFile *art = duke_art_new();
 
     ck_assert_ptr_nonnull(art);
@@ -69,7 +77,8 @@ START_TEST(test_art_open_memory_copies_buffer)
     memset(contents, 0, sizeof(contents));
     ck_assert(duke_art_read_tiles_sparse(art));
     ck_assert_int_eq(art->header.localtilestart, 7);
-    ck_assert_uint_eq(duke_art_get_tile_data_by_number(art, 7, &pixels), 4);
+    ck_assert(duke_art_get_tile_data_by_number(art, 7, &pixels, &size));
+    ck_assert_uint_eq(size, 4);
     ck_assert_int_eq(memcmp(pixels, expected_pixels, sizeof(expected_pixels)), 0);
 
     duke_art_free(art);

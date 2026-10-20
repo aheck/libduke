@@ -18,6 +18,7 @@ START_TEST(test_grp_entries_are_read_and_accessed)
     uint32_t first_size = sizeof(first_data) - 1;
     uint32_t second_size = sizeof(second_data) - 1;
     void *data = NULL;
+    size_t size;
 
     snprintf(filename, sizeof(filename), "libduke-grp-%ld.grp",
         (long) test_process_id());
@@ -44,9 +45,12 @@ START_TEST(test_grp_entries_are_read_and_accessed)
     ck_assert_uint_eq(entry->filesize, second_size);
     ck_assert_ptr_null(duke_grp_get_entry_by_index(grp, 2));
 
-    ck_assert_uint_eq(
-        duke_grp_get_file_data_by_filename(grp, "SECOND.BIN", &data),
-        second_size);
+    ck_assert(duke_grp_get_file_data_by_filename(grp, "SECOND.BIN", &data, &size));
+    ck_assert_uint_eq(size, second_size);
+    ck_assert(duke_grp_get_file_data_by_index(grp, 1, &data, NULL));
+    ck_assert(!duke_grp_get_file_data_by_index(grp, 2, &data, &size));
+    ck_assert_uint_eq(size, second_size);
+    ck_assert(!duke_grp_get_file_data_by_filename(grp, "MISSING", &data, &size));
     ck_assert_int_eq(memcmp(data, second_data, second_size), 0);
 
     duke_grp_free(grp);

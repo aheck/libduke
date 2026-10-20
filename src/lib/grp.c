@@ -152,7 +152,7 @@ bool duke_grp_read_entries_full(DukeGrpFile *file)
     for (uint32_t i = 0; i < file->header.entry_count; i++) {
         void *data;
 
-        if (duke_grp_get_file_data_by_index(file, i, &data) == (size_t) -1) {
+        if (!duke_grp_get_file_data_by_index(file, i, &data, NULL)) {
             return false;
         }
     }
@@ -169,32 +169,36 @@ DukeGrpFileEntry* duke_grp_get_entry_by_index(DukeGrpFile *file, uint32_t index)
     return g_list_nth_data(file->entries, index);
 }
 
-size_t duke_grp_get_file_data_by_index(DukeGrpFile *file, uint32_t index, void **data)
+bool duke_grp_get_file_data_by_index(DukeGrpFile *file, uint32_t index,
+    void **data, size_t *data_size)
 {
     DukeGrpFileEntry *entry;
 
     if (file == NULL || data == NULL) {
-        return -1;
+        return false;
     }
 
     entry = duke_grp_get_entry_by_index(file, index);
     if (entry == NULL) {
-        return -1;
+        return false;
     }
 
     if (entry->data != NULL) {
         *data = entry->data;
-        return entry->filesize;
+        if (data_size != NULL) {
+            *data_size = entry->filesize;
+        }
+        return true;
     }
 
     if (fseek(file->fp, file->data_section_offset + entry->data_offset,
             SEEK_SET) != 0) {
-        return -1;
+        return false;
     }
 
     entry->data = malloc(entry->filesize == 0 ? 1 : entry->filesize);
     if (entry->data == NULL) {
-        return -1;
+        return false;
     }
 
     size_t num_bytes = fread(entry->data, 1, entry->filesize, file->fp);
@@ -202,19 +206,23 @@ size_t duke_grp_get_file_data_by_index(DukeGrpFile *file, uint32_t index, void *
     if (num_bytes != entry->filesize) {
         free(entry->data);
         entry->data = NULL;
-        return -1;
+        return false;
     }
 
     *data = entry->data;
-    return num_bytes;
+    if (data_size != NULL) {
+        *data_size = num_bytes;
+    }
+    return true;
 }
 
-size_t duke_grp_get_file_data_by_filename(DukeGrpFile *file, const char *filename, void **data)
+bool duke_grp_get_file_data_by_filename(DukeGrpFile *file, const char *filename,
+    void **data, size_t *data_size)
 {
     GList *node;
 
     if (file == NULL || filename == NULL || data == NULL) {
-        return -1;
+        return false;
     }
 
     for (node = file->entries; node != NULL; node = node->next) {
@@ -222,11 +230,11 @@ size_t duke_grp_get_file_data_by_filename(DukeGrpFile *file, const char *filenam
 
         if (strcmp(entry->filename, filename) == 0) {
             int index = g_list_position(file->entries, node);
-            return duke_grp_get_file_data_by_index(file, (uint32_t) index, data);
+            return duke_grp_get_file_data_by_index(file, (uint32_t) index, data, data_size);
         }
     }
 
-    return -1;
+    return false;
 }
 
 void duke_grp_reset_last_error(DukeGrpFile *file)
