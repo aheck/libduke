@@ -138,6 +138,12 @@ To run the test suite:
 meson test -C build --print-errorlogs
 ```
 
+GitHub Actions builds the static and shared libraries and command-line tools,
+then runs the default test suite on Linux, Windows (MSVC), and macOS for every
+push and pull request. The workflow can also be started manually. It includes
+the Check-based and Python archive-tool tests; the optional renderer and viewer
+remain disabled. Failed jobs upload Meson logs as workflow artifacts.
+
 The libcheck-based GRP, ART, palette, and map tests are enabled by default.
 To omit them and avoid the Check dependency entirely:
 
