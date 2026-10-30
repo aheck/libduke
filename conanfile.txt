@@ -1,6 +1,11 @@
 [requires]
 libcheck/0.15.2
 
+[options]
+# Tests use Check's normal output, not the optional Subunit protocol.
+# Avoid Subunit's Autotools dependency chain, which fails with Windows/MSVC.
+libcheck/*:with_subunit=False
+
 [generators]
 PkgConfigDeps
 MesonToolchain
